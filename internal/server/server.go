@@ -1,10 +1,10 @@
 package server
 
 import (
-	"bytes"
 	"html/template"
 	"log"
 	"net/http"
+	"path"
 	"path/filepath"
 
 	"VLX_Robot/internal/config"
@@ -12,7 +12,7 @@ import (
 	"VLX_Robot/internal/websocket"
 )
 
-// Server holds all dependencies for the main public-facing HTTP server.
+// Server manages the public-facing HTTP server dependencies and routes.
 type Server struct {
 	httpServer   *http.Server
 	hub          *websocket.Hub
@@ -20,7 +20,7 @@ type Server struct {
 	cfg          *config.Config
 }
 
-// NewServer creates and initializes a new main HTTP server instance.
+// NewServer initializes the main HTTP server using the provided configuration.
 func NewServer(cfg *config.Config, hub *websocket.Hub, twitchClient *twitch.Client) *Server {
 	mux := http.NewServeMux()
 	s := &Server{
@@ -36,75 +36,73 @@ func NewServer(cfg *config.Config, hub *websocket.Hub, twitchClient *twitch.Clie
 	return s
 }
 
-// registerRoutes sets up all HTTP endpoints for the main server.
+// registerRoutes sets up the HTTP endpoints for the main server.
+// NOTE: We listen on absolute paths (e.g., "/ws") because the Reverse Proxy
+// strips the security prefix before the request reaches us.
 func (s *Server) registerRoutes(mux *http.ServeMux) {
-	// 1. Dynamic handler for overlay.html (to inject config)
-	mux.HandleFunc("/static/overlay.html", s.handleOverlayHTML)
+	// 1. Serve the dynamic visual overlay
+	mux.HandleFunc("/static/alerts_overlay.html", func(w http.ResponseWriter, r *http.Request) {
+		s.serveTemplate(w, "alerts_overlay.html")
+	})
 
-	// 2. Standard file server for all other static assets (CSS, JS, images)
+	// 2. Serve the dynamic audio/chat overlay
+	mux.HandleFunc("/static/chat_overlay.html", func(w http.ResponseWriter, r *http.Request) {
+		s.serveTemplate(w, "chat_overlay.html")
+	})
+
+	// 3. Serve static assets (CSS, JS, Images)
+	// Listens on "/static/" because ProxyPass sends "/vlxrobot/static/..." as "/static/..."
 	fileServer := http.FileServer(http.Dir("./static"))
 	mux.Handle("/static/", http.StripPrefix("/static/", fileServer))
 
-	// 3. WebSocket endpoint for the overlay client
-	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+	// 4. WebSocket endpoint
+	// Listens on "/ws" because RewriteRule changes "/vlxrobot/ws" to "/ws"
+	mux.HandleFunc(s.cfg.Server.WebsocketPath, func(w http.ResponseWriter, r *http.Request) {
 		websocket.ServeWs(s.hub, w, r)
 	})
 
-	// 4. Twitch EventSub webhook receiver
+	// 5. Twitch EventSub Webhook receiver
 	mux.HandleFunc("/webhooks/twitch", s.twitchClient.HandleEventSubCallback)
 
-	// 5. Health check endpoint
+	// 6. Health check endpoint
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
 	})
 
-	// Note: The /test/alert endpoint is now served by the separate test server.
-
-	log.Println("Enabled public routes:")
-	log.Println("  /static/overlay.html -> (Dynamic HTML)")
-	log.Println("  /static/* -> (Static file server: CSS, JS, Images)")
-	log.Println("  /ws                  -> (WebSocket)")
-	log.Println("  /webhooks/twitch     -> (Twitch EventSub)")
-	log.Println("  /health              -> (Health Check)")
+	log.Println("[INFO] Main HTTP server routes registered.")
 }
 
-// handleOverlayHTML serves the overlay.html file as a template,
-// injecting the configured WebSocket path into it before sending.
-func (s *Server) handleOverlayHTML(w http.ResponseWriter, r *http.Request) {
-	// Data structure for template injection
-	data := struct {
-		WebsocketPath string
-	}{
-		WebsocketPath: s.cfg.Server.WebsocketPath,
-	}
+// serveTemplate serves the requested HTML file, injecting the security configuration paths.
+func (s *Server) serveTemplate(w http.ResponseWriter, filename string) {
+	// Construct the PUBLIC paths for the browser to use (e.g. "/vlxrobot/ws")
+	publicWsPath := path.Join(s.cfg.Server.PathPrefix, s.cfg.Server.WebsocketPath)
+		publicAssetPrefix := s.cfg.Server.PathPrefix
 
-	// Define file path
-	fp := filepath.Join("static", "overlay.html")
+			data := struct {
+				WebsocketPath string
+				AssetPrefix   string
+			}{
+				WebsocketPath: publicWsPath,
+				AssetPrefix:   publicAssetPrefix,
+			}
 
-	// Parse the template file
-	tmpl, err := template.ParseFiles(fp)
-	if err != nil {
-		log.Printf("[ERROR] Failed to parse overlay.html template: %v", err)
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		return
-	}
+			fp := filepath.Join("static", filename)
+			tmpl, err := template.ParseFiles(fp)
+			if err != nil {
+				log.Printf("[ERROR] Failed to parse template %s: %v", filename, err)
+				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+				return
+			}
 
-	// Execute the template into a buffer to catch errors
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
-		log.Printf("[ERROR] Failed to execute overlay.html template: %v", err)
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		return
-	}
-
-	// Set headers and write the response
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write(buf.Bytes())
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			if err := tmpl.Execute(w, data); err != nil {
+				log.Printf("[ERROR] Failed to execute template %s: %v", filename, err)
+			}
 }
 
 // ListenAndServe starts the main HTTP server.
 func (s *Server) ListenAndServe() error {
-	log.Printf("Main HTTP server listening on http://localhost%s", s.httpServer.Addr)
+	log.Printf("[INFO] Main HTTP server listening on %s", s.httpServer.Addr)
 	return s.httpServer.ListenAndServe()
 }
