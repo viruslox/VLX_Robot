@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sound/Video FX Overlay</title>
+    <style>
+        body {
+            background-color: transparent;
+            overflow: hidden;
+            margin: 0;
+            padding: 0;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            justify_content: center;
+            align-items: center;
+        }
+
+        /* Stile per il video: nascosto di default */
+        #command-video {
+            max-width: 80%;  /* Non occupare tutto lo schermo se il video è enorme */
+            max-height: 80%;
+            display: none;   /* Nascosto finché non serve */
+            z-index: 100;
+        }
+    </style>
+</head>
+<body>
+    <!-- Elemento Video per file mp4/webm -->
+    <video id="command-video"></video>
+
+    <!-- Script Logica -->
+    <script src="/static/sound_overlay.js"></script>
+</body>
+</html>
