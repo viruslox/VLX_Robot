@@ -115,6 +115,8 @@ func ScanAudioCommands(baseDir string) (AudioCommandsMap, error) {
 func (c *ChatClient) Start() {
 	log.Println("[INFO] [Chat] Connecting to Twitch IRC...")
 	c.client = twitch.NewClient(c.config.BotUsername, c.config.BotOAuthToken)
+	// Force port 443 instead of standard 6697 to avoid fw issues
+	c.client.IrcAddress = "irc.chat.twitch.tv:443"
 
 	c.client.OnPrivateMessage(c.handlePrivateMessage)
 
