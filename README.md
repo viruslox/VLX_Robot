@@ -203,8 +203,10 @@ curl -X POST -d '{"type":"youtube_member", "user_name":"MembroYT", "level":"Live
 
 curl -X POST -d '{"type":"stream_tip", "user_name":"DonatoreSegreto", "amount_string":"€20.00", "currency":"EUR", "message":"Grande live!"}' http://localhost:8001/test/alert
 
-
-Ruolo nel codice        Equivalente YouTube         Equivalente Twitch
-PermissionEveryone      Iscritto ("Iscriviti")      Follower
-PermissionSubscriber    Abbonato ("Abbonati")       Subscriber
-PermissionVIP           Moderatore                  VIP
+# TODO & Roadmap
+Check the TODO.md file for the detailed development roadmap.
+[x] Basic Twitch EventSub
+[x] Twitch Chat Audio Commands
+[x] WebSocket Overlay System
+[ ] YouTube Live Chat Polling (In Progress)
+[ ] YouTube Member Alerts
