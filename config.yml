@@ -1,6 +1,7 @@
 server:
   base_url: "https://abcdef123.eu.ngrok.io"
-  websocket_path: "/vlxrobot/ws"
+  path_prefix: "/vlxrobot"
+  websocket_path: "/ws"
   port: "8000"
   test_port: "8001"
 
@@ -13,29 +14,19 @@ database:
   # 'disable', 'require', 'verify-full'
   sslmode: "disable" 
 
-# Twitch APIs
+# Recommended to use 2 different accounts, or at least 2 difrerent tokens
+# You can create token with https://twitchtokengenerator.com/
 twitch:
   client_id: "IL_TUO_CLIENT_ID_TWITCH"
   client_secret: "IL_TUO_CLIENT_SECRET_TWITCH"
   webhook_secret: "UNA_FRASE_SEGRETA_MOLTO_LUNGA_E_CASUALE_PER_I_WEBHOOK"
   user_access_token: "il_token_lungo_che_hai_appena_copiato"
-
-twitch_chat:
-  bot_username: "NOME_DEL_TUO_BOT"
-  bot_token: "oauth:authtoken_del_bot"
+  chat:
+    bot_username: "bot_name"
+    bot_token: "oauth:IL_TUO_TOKEN"
+    channel_to_join: "channel_name"
 
   # YouTube APIs
 youtube:
   api_key: ""  # Leave empty to disable YouTube module
   channel_id: "" # We have no use for it yet
-
-monitoring:
-  # Channel = Twitch login name
-  twitch_channels:
-    - "nomecanale1"
-    - "nomecanale2"
-# YouTube channels, not enabled because the code is not ready
-# To enable it, remove [], uncomment next line(s) and customize the Channel ID(s)
-  youtube_channel_ids: []  # Empty list
-#    - "UCxxxxxxxxxxxxxxxxx"
-#    - "UCyyyyyyyyyyyyyyyyy"
