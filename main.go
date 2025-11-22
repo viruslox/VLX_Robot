@@ -45,7 +45,7 @@ func main() {
 	}
 
 	// 5. Initialize Twitch Chat Bot
-	cmdMap, err := twitch.ScanAudioCommands(filepath.Join("static", "sounds", "commands"))
+	cmdMap, err := twitch.ScanAudioCommands(filepath.Join("static", "chat", "commands"))
 	if err != nil {
 		log.Printf("[WARN] Audio commands scan failed: %v", err)
 	} else {
