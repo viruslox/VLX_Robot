@@ -22,6 +22,9 @@ const (
 	PermissionVIP        = "vip"        // VIP/Mods
 )
 
+// Global Cooldown constant (15 seconds)
+const CommandCooldownDuration = 15 * time.Second
+
 // CommandData holds metadata for media commands
 type CommandData struct {
 	Filename   string
@@ -33,10 +36,11 @@ type AudioCommandsMap map[string]CommandData
 
 // ChatClient handles Twitch IRC connection
 type ChatClient struct {
-	config   config.TwitchChatConfig
-	hub      *websocket.Hub
-	client   *twitch.Client
-	commands AudioCommandsMap
+	config    config.TwitchChatConfig
+	hub       *websocket.Hub
+	client    *twitch.Client
+	commands  AudioCommandsMap
+	lastUsage map[string]time.Time // Tracks command cooldowns
 }
 
 // ChatAlertPayload defines the JSON sent to the overlay
@@ -53,9 +57,10 @@ type EmoteWallPayload struct {
 
 func NewChatClient(cfg config.TwitchChatConfig, hub *websocket.Hub, commands AudioCommandsMap) *ChatClient {
 	return &ChatClient{
-		config:   cfg,
-		hub:      hub,
-		commands: commands,
+		config:    cfg,
+		hub:       hub,
+		commands:  commands,
+		lastUsage: make(map[string]time.Time), // Initialize cooldown map
 	}
 }
 
@@ -93,12 +98,12 @@ func ScanAudioCommands(baseDir string) (AudioCommandsMap, error) {
 
 			var mediaType string
 			switch ext {
-				case ".mp3", ".wav", ".ogg":
-					mediaType = "audio"
-				case ".mp4", ".webm":
-					mediaType = "video"
-				default:
-					continue
+			case ".mp3", ".wav", ".ogg":
+				mediaType = "audio"
+			case ".mp4", ".webm":
+				mediaType = "video"
+			default:
+				continue
 			}
 
 			relativePath := folderName + "/" + filename
@@ -144,15 +149,15 @@ func (c *ChatClient) Start() {
 }
 
 func (c *ChatClient) handlePrivateMessage(message twitch.PrivateMessage) {
-        // EMOTE WALL (reads all messages)
-        if len(message.Emotes) > 0 {
+	// 1. EMOTE WALL (reads all messages)
+	if len(message.Emotes) > 0 {
 		var emoteURLs []string
 		// used emotes list
 		for _, emote := range message.Emotes {
-            for i := 0; i < emote.Count; i++ {
-			    url := "https://static-cdn.jtvnw.net/emoticons/v2/" + emote.ID + "/default/dark/3.0"
-			    emoteURLs = append(emoteURLs, url)
-            }
+			for i := 0; i < emote.Count; i++ {
+				url := "https://static-cdn.jtvnw.net/emoticons/v2/" + emote.ID + "/default/dark/3.0"
+				emoteURLs = append(emoteURLs, url)
+			}
 		}
 
 		if len(emoteURLs) > 0 {
@@ -165,7 +170,7 @@ func (c *ChatClient) handlePrivateMessage(message twitch.PrivateMessage) {
 		}
 	}
 
-	// chat commands start with !
+	// 2. Check for Command Prefix
 	if !strings.HasPrefix(message.Message, "!") {
 		return
 	}
@@ -173,6 +178,7 @@ func (c *ChatClient) handlePrivateMessage(message twitch.PrivateMessage) {
 	rawCommand := strings.Fields(message.Message)[0]
 	commandName := strings.ToLower(strings.TrimPrefix(rawCommand, "!"))
 
+	// 3. LIST COMMANDS Logic (!commands / !comandi)
 	if commandName == "commands" || commandName == "comandi" {
 		var everyone []string
 		var subs []string
@@ -204,14 +210,18 @@ func (c *ChatClient) handlePrivateMessage(message twitch.PrivateMessage) {
 
 		// Subscribers
 		if len(subs) > 0 {
-			if sb.Len() > 0 { sb.WriteString(" / ") }
+			if sb.Len() > 0 {
+				sb.WriteString(" / ")
+			}
 			sb.WriteString("Subscribers: ")
 			sb.WriteString(strings.Join(subs, ", "))
 		}
 
 		// VIPs
 		if len(vips) > 0 {
-			if sb.Len() > 0 { sb.WriteString(" / ") }
+			if sb.Len() > 0 {
+				sb.WriteString(" / ")
+			}
 			sb.WriteString("Vips: ")
 			sb.WriteString(strings.Join(vips, ", "))
 		}
@@ -225,6 +235,7 @@ func (c *ChatClient) handlePrivateMessage(message twitch.PrivateMessage) {
 		return
 	}
 
+	// 4. MEDIA COMMAND Logic
 	cmdData, exists := c.commands[commandName]
 	if !exists {
 		return
@@ -234,6 +245,16 @@ func (c *ChatClient) handlePrivateMessage(message twitch.PrivateMessage) {
 	if !c.hasPermission(message.User, cmdData.Permission) {
 		return
 	}
+
+	// --- COOLDOWN CHECK ---
+	if lastUsed, ok := c.lastUsage[commandName]; ok {
+		if time.Since(lastUsed) < CommandCooldownDuration {
+			log.Printf("[INFO] [Chat] Command !%s is on cooldown. Ignored.", commandName)
+			return
+		}
+	}
+	c.lastUsage[commandName] = time.Now()
+	// ----------------------
 
 	log.Printf("[INFO] [Chat] !%s triggered by %s", commandName, message.User.Name)
 
@@ -258,17 +279,17 @@ func (c *ChatClient) hasPermission(user twitch.User, requiredLevel string) bool 
 	}
 
 	switch requiredLevel {
-		case PermissionEveryone:
-			return true
-		case PermissionSubscriber:
-			// Checks for sub or founder badge
-			_, isSub := user.Badges["subscriber"]
-			_, isFounder := user.Badges["founder"]
-			return isSub || isFounder
-		case PermissionVIP:
-			_, isVIP := user.Badges["vip"]
-			return isVIP
-		default:
-			return false
+	case PermissionEveryone:
+		return true
+	case PermissionSubscriber:
+		// Checks for sub or founder badge
+		_, isSub := user.Badges["subscriber"]
+		_, isFounder := user.Badges["founder"]
+		return isSub || isFounder
+	case PermissionVIP:
+		_, isVIP := user.Badges["vip"]
+		return isVIP
+	default:
+		return false
 	}
 }
