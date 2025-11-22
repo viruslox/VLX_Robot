@@ -1,57 +1,62 @@
-// --- Globals ---
+// --- Global State Management ---
 const mediaQueue = [];
 let isPlaying = false;
 let basePath = '';
 
+// DOM Element Reference
 const videoElement = document.getElementById('command-video');
 
-// --- WebSocket ---
+// --- WebSocket Initialization & Event Handling ---
 function connect() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.host;
-    // Recupera il path del WebSocket dalla configurazione globale se esiste, altrimenti usa il default
+
+    // Retrieve the WebSocket endpoint from the global configuration or fall back to the default path.
     const wsPath = (window.VLX_CONFIG && window.VLX_CONFIG.WEBSOCKET_PATH) || '/vlxrobot/ws';
 
-    // Calcola il percorso base per gli asset (rimuove l'ultimo segmento /ws)
+    // Derive the base asset path by stripping the WebSocket endpoint suffix (e.g., removing '/ws').
     basePath = wsPath.substring(0, wsPath.lastIndexOf('/'));
 
     const socket = new WebSocket(`${protocol}//${host}${wsPath}`);
 
-    socket.onopen = () => console.log("FX Overlay Connected.");
+    socket.onopen = () => console.log("[System] FX Overlay Connected.");
 
     socket.onclose = (event) => {
-        console.warn("FX Overlay disconnected. Reconnecting in 5 seconds...", event.reason);
+        console.warn(`[System] Connection lost (Code: ${event.code}). Reconnecting in 5 seconds...`);
         setTimeout(connect, 5000);
     };
 
     socket.onerror = (e) => {
-        console.error("WebSocket error:", e);
+        console.error("[Error] WebSocket error observed:", e);
         socket.close();
     };
 
     socket.onmessage = (event) => {
         try {
             const data = JSON.parse(event.data);
-            // Ascolta solo i comandi di tipo 'sound_command'
+
+            // Filter incoming messages: only process 'sound_command' payloads.
             if (data.type === 'sound_command') {
                 mediaQueue.push(data);
                 processQueue();
             }
-        } catch (err) { console.error("Error parsing message:", err); }
+        } catch (err) {
+            console.error("[Error] Failed to parse incoming message:", err);
+        }
     };
 }
 
-// --- Queue Processor ---
+// --- Queue Processing Logic ---
 function processQueue() {
-    // Se sta già riproducendo qualcosa o la coda è vuota, esce
+    // Enforce sequential playback: abort if media is currently playing or if the queue is empty.
     if (isPlaying || mediaQueue.length === 0) return;
 
     isPlaying = true;
     const item = mediaQueue.shift();
 
-    // Costruisce URL: /vlxrobot/static/audio/cartella/file.ext
-    // Item filename arriva già formato come "everyone/file.mp3" o "subscribers/file.mp4"
-    const src = `${basePath}/static/audio/${item.filename}`;
+    // Construct the absolute URL for the media asset.
+    // The filename property is expected to include the relative subdirectory (e.g., "everyone/file.mp3").
+    const src = `${basePath}/static/chat/${item.filename}`;
 
     if (item.media_type === 'video') {
         playVideo(src);
@@ -60,13 +65,18 @@ function processQueue() {
     }
 }
 
+/**
+ * Handles audio playback logic.
+ * @param {string} src - The source URL of the audio file.
+ */
 function playAudio(src) {
-    console.log("Playing AUDIO:", src);
+    console.log("[Playback] Starting AUDIO:", src);
     const audio = new Audio(src);
     audio.volume = 1.0;
 
+    // Attempt playback with error handling to prevent queue deadlocks.
     audio.play().catch(e => {
-        console.warn("Audio fail:", e);
+        console.warn("[Warning] Audio playback failed:", e);
         isPlaying = false;
         processQueue();
     });
@@ -77,43 +87,47 @@ function playAudio(src) {
     };
 
     audio.onerror = () => {
-        console.error("Error loading audio:", src);
+        console.error("[Error] Failed to load audio resource:", src);
         isPlaying = false;
         processQueue();
     };
 }
 
+/**
+ * Handles video playback logic and DOM visibility toggling.
+ * @param {string} src - The source URL of the video file.
+ */
 function playVideo(src) {
-    console.log("Playing VIDEO:", src);
+    console.log("[Playback] Starting VIDEO:", src);
 
-    // 1. Setup Video
+    // 1. Configure Video Element
     videoElement.src = src;
-    videoElement.style.display = 'block'; // Rendi visibile
+    videoElement.style.display = 'block'; // Ensure visibility during playback
     videoElement.volume = 1.0;
 
-    // 2. Play
+    // 2. Attempt Playback
     videoElement.play().catch(e => {
-        console.warn("Video fail:", e);
+        console.warn("[Warning] Video playback failed:", e);
         videoElement.style.display = 'none';
         isPlaying = false;
         processQueue();
     });
 
-    // 3. Cleanup on End
+    // 3. Cleanup upon completion
     videoElement.onended = () => {
-        videoElement.style.display = 'none'; // Nascondi di nuovo
-        videoElement.src = "";
+        videoElement.style.display = 'none'; // Hide element to maintain transparency
+        videoElement.src = ""; // Clear source to release resources
         isPlaying = false;
         processQueue();
     };
 
     videoElement.onerror = () => {
-        console.error("Error loading video:", src);
+        console.error("[Error] Failed to load video resource:", src);
         videoElement.style.display = 'none';
         isPlaying = false;
         processQueue();
     };
 }
 
-// Avvia la connessione
+// --- Entry Point ---
 connect();
