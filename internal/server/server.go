@@ -37,8 +37,6 @@ func NewServer(cfg *config.Config, hub *websocket.Hub, twitchClient *twitch.Clie
 }
 
 // registerRoutes sets up the HTTP endpoints for the main server.
-// NOTE: We listen on absolute paths (e.g., "/ws") because the Reverse Proxy
-// strips the security prefix before the request reaches us.
 func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// 1. Serve the dynamic visual overlay
 	mux.HandleFunc("/static/alerts_overlay.html", func(w http.ResponseWriter, r *http.Request) {
@@ -50,18 +48,16 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 		s.serveTemplate(w, "chat_overlay.html")
 	})
 
-        // 3. Serve the emotes wall overlay
-        mux.HandleFunc("/static/emotes_overlay.html", func(w http.ResponseWriter, r *http.Request) {
+	// 3. Serve the emotes wall overlay
+	mux.HandleFunc("/static/emotes_overlay.html", func(w http.ResponseWriter, r *http.Request) {
 		s.serveTemplate(w, "emotes_overlay.html")
 	})
 
 	// 4. Serve static assets (CSS, JS, Images)
-	// Listens on "/static/" because ProxyPass sends "/vlxrobot/static/..." as "/static/..."
 	fileServer := http.FileServer(http.Dir("./static"))
 	mux.Handle("/static/", http.StripPrefix("/static/", fileServer))
 
 	// 5. WebSocket endpoint
-	// Listens on "/ws" because RewriteRule changes "/vlxrobot/ws" to "/ws"
 	mux.HandleFunc(s.cfg.Server.WebsocketPath, func(w http.ResponseWriter, r *http.Request) {
 		websocket.ServeWs(s.hub, w, r)
 	})
