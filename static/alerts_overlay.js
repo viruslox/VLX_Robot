@@ -60,34 +60,34 @@ function processQueue() {
     // --- Alert Configuration ---
     let config = {
         duration: 8000,
-        sound: `${basePath}/static/sounds/alert.mp3`
+        sound: `${basePath}/static/alerts/alert.mp3`
     };
 
     switch (data.type) {
         case 'twitch_follow':
             config.title = "New Follower";
             config.detail = data.user_name;
-            config.image = `${basePath}/static/videos/follow.mp4`;
+            config.image = `${basePath}/static/alerts/follow.mp4`;
             break;
 
         case 'twitch_subscribe':
             config.title = `New Tier ${data.tier.charAt(0)} Sub!`;
             config.detail = data.user_name;
-            config.image = `${basePath}/static/videos/sub.mp4`;
+            config.image = `${basePath}/static/alerts/sub.mp4`;
             break;
 
         case 'twitch_resubscribe':
             config.title = `${data.cumulative_months || data.months} Month Resub!`;
             config.detail = data.user_name;
             config.message = data.message;
-            config.image = `${basePath}/static/videos/sub.mp4`;
+            config.image = `${basePath}/static/alerts/sub.mp4`;
             config.duration = data.message ? 8000 : 5000;
             break;
 
         case 'twitch_gift_sub':
             config.detail = data.is_anonymous ? "An Anonymous Gifter" : data.gifter_name;
             config.title = `Gifted ${data.total_gifts} Tier ${data.tier.charAt(0)} Sub(s)!`;
-            config.image = `${basePath}/static/videos/sub.mp4`;
+            config.image = `${basePath}/static/alerts/sub.mp4`;
             config.duration = 8000;
             break;
 
@@ -95,30 +95,30 @@ function processQueue() {
             config.title = `${data.bits} Bit Cheer!`;
             config.detail = data.is_anonymous ? "Anonymous" : data.user_name;
             config.message = data.message;
-            config.image = `${basePath}/static/videos/cheer.mp4`;
+            config.image = `${basePath}/static/alerts/cheer.mp4`;
             config.duration = 8000;
             break;
 
         case 'twitch_raid':
             config.title = "Incoming Raid!";
             config.detail = `${data.raider_name} is raiding with ${data.viewers} viewers!`;
-            config.image = `${basePath}/static/videos/raid.mp4`;
+            config.image = `${basePath}/static/alerts/raid.mp4`;
             config.duration = 10000;
             break;
 
         case 'youtube_member':
             config.title = "New Member";
             config.detail = data.user_name;
-            config.image = `${basePath}/static/videos/follow.mp4`;
-//            config.sound = `${basePath}/static/sounds/follow.mp3`;
+            config.image = `${basePath}/static/alerts/follow.mp4`;
+//            config.sound = `${basePath}/static/alerts/follow.mp3`;
             break;
 
         case 'youtube_super_chat':
             config.title = `Super Chat: ${data.amount_string}`;
             config.detail = data.user_name;
             config.message = data.message || "";
-            config.image = `${basePath}/static/videos/cheer.mp4`;
-//            config.sound = `${basePath}/static/sounds/superchat.mp3`;
+            config.image = `${basePath}/static/alerts/cheer.mp4`;
+//            config.sound = `${basePath}/static/alerts/superchat.mp3`;
             config.duration = 8000;
             break;
 
@@ -126,14 +126,14 @@ function processQueue() {
             config.title = `Super Sticker: ${data.amount_string}`;
             config.detail = data.user_name;
             config.message = data.sticker_alt || "";
-            config.image = `${basePath}/static/videos/cheer.mp4`;
+            config.image = `${basePath}/static/alerts/cheer.mp4`;
             config.du
 
         case 'stream_tip':
             config.title = "New Donation!";
             config.detail = `${data.user_name} (${data.amount_string})`;
             config.message = data.message || "";
-            config.image = `${basePath}/static/videos/cheer.mp4`;
+            config.image = `${basePath}/static/alerts/cheer.mp4`;
             config.duration = 8000;
             break;
 
