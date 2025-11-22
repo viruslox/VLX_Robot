@@ -50,21 +50,26 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 		s.serveTemplate(w, "chat_overlay.html")
 	})
 
-	// 3. Serve static assets (CSS, JS, Images)
+        // 3. Serve the emotes wall overlay
+        mux.HandleFunc("/static/emotes_overlay.html", func(w http.ResponseWriter, r *http.Request) {
+		s.serveTemplate(w, "emotes_overlay.html")
+	})
+
+	// 4. Serve static assets (CSS, JS, Images)
 	// Listens on "/static/" because ProxyPass sends "/vlxrobot/static/..." as "/static/..."
 	fileServer := http.FileServer(http.Dir("./static"))
 	mux.Handle("/static/", http.StripPrefix("/static/", fileServer))
 
-	// 4. WebSocket endpoint
+	// 5. WebSocket endpoint
 	// Listens on "/ws" because RewriteRule changes "/vlxrobot/ws" to "/ws"
 	mux.HandleFunc(s.cfg.Server.WebsocketPath, func(w http.ResponseWriter, r *http.Request) {
 		websocket.ServeWs(s.hub, w, r)
 	})
 
-	// 5. Twitch EventSub Webhook receiver
+	// 6. Twitch EventSub Webhook receiver
 	mux.HandleFunc("/webhooks/twitch", s.twitchClient.HandleEventSubCallback)
 
-	// 6. Health check endpoint
+	// 7. Health check endpoint
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
