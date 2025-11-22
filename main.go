@@ -31,7 +31,6 @@ func main() {
 	go hub.Run()
 
 	// 4. Initialize Twitch API Client (EventSub)
-	// We monitor the single channel defined in the config
 	monitorChannels := []string{cfg.Twitch.ChannelName}
 
 	twitchClient, err := twitch.NewClient(cfg.Twitch, monitorChannels, cfg.Server.BaseURL, hub, db)
@@ -45,7 +44,7 @@ func main() {
 	}
 
 	// 5. Initialize Twitch Chat Bot
-	cmdMap, err := twitch.ScanAudioCommands(filepath.Join("static", "chat", "commands"))
+	cmdMap, err := twitch.ScanAudioCommands(filepath.Join("static", "chat"))
 	if err != nil {
 		log.Printf("[WARN] Audio commands scan failed: %v", err)
 	} else {
@@ -54,7 +53,6 @@ func main() {
 	}
 
 	// 6. Initialize YouTube Client (Polling)
-	// Note: YouTube logic is initialized but runs its own polling loop internally if implemented
 	_ = youtube.NewClient(cfg.YouTube, hub, db)
 
 	// 7. Start the Private Test Server (e.g., Port 8001)
