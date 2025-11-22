@@ -45,6 +45,11 @@ type ChatAlertPayload struct {
 	MediaType string `json:"media_type"`
 }
 
+type EmoteWallPayload struct {
+	Type   string   `json:"type"`
+	Emotes []string `json:"emotes"`
+}
+
 func NewChatClient(cfg config.TwitchChatConfig, hub *websocket.Hub, commands AudioCommandsMap) *ChatClient {
 	return &ChatClient{
 		config:   cfg,
@@ -138,6 +143,28 @@ func (c *ChatClient) Start() {
 }
 
 func (c *ChatClient) handlePrivateMessage(message twitch.PrivateMessage) {
+	// EMOTE WALL (reads all messages)
+	if len(message.Emotes) > 0 {
+		var emoteURLs []string
+		// used emotes list
+		for _, emote := range message.Emotes {
+            for i := 0; i < emote.Count; i++ {
+			    url := "https://static-cdn.jtvnw.net/emoticons/v2/" + emote.ID + "/default/dark/3.0"
+			    emoteURLs = append(emoteURLs, url)
+		}
+	}
+
+	if len(emoteURLs) > 0 {
+		payload := EmoteWallPayload{
+			Type:   "emote_wall",
+			Emotes: emoteURLs,
+			}
+		payloadBytes, _ := json.Marshal(payload)
+		c.hub.Broadcast <- payloadBytes
+		}
+	}
+
+	// chat commands start with !
 	if !strings.HasPrefix(message.Message, "!") {
 		return
 	}
