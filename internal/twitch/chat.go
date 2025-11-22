@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -143,24 +144,24 @@ func (c *ChatClient) Start() {
 }
 
 func (c *ChatClient) handlePrivateMessage(message twitch.PrivateMessage) {
-	// EMOTE WALL (reads all messages)
-	if len(message.Emotes) > 0 {
+        // EMOTE WALL (reads all messages)
+        if len(message.Emotes) > 0 {
 		var emoteURLs []string
 		// used emotes list
 		for _, emote := range message.Emotes {
             for i := 0; i < emote.Count; i++ {
 			    url := "https://static-cdn.jtvnw.net/emoticons/v2/" + emote.ID + "/default/dark/3.0"
 			    emoteURLs = append(emoteURLs, url)
+            }
 		}
-	}
 
-	if len(emoteURLs) > 0 {
-		payload := EmoteWallPayload{
-			Type:   "emote_wall",
-			Emotes: emoteURLs,
+		if len(emoteURLs) > 0 {
+			payload := EmoteWallPayload{
+				Type:   "emote_wall",
+				Emotes: emoteURLs,
 			}
-		payloadBytes, _ := json.Marshal(payload)
-		c.hub.Broadcast <- payloadBytes
+			payloadBytes, _ := json.Marshal(payload)
+			c.hub.Broadcast <- payloadBytes
 		}
 	}
 
@@ -171,6 +172,58 @@ func (c *ChatClient) handlePrivateMessage(message twitch.PrivateMessage) {
 
 	rawCommand := strings.Fields(message.Message)[0]
 	commandName := strings.ToLower(strings.TrimPrefix(rawCommand, "!"))
+
+	if commandName == "commands" || commandName == "comandi" {
+		var everyone []string
+		var subs []string
+		var vips []string
+
+		// Create rank based command lists
+		for name, data := range c.commands {
+			cmd := "!" + name
+			switch data.Permission {
+			case PermissionEveryone:
+				everyone = append(everyone, cmd)
+			case PermissionSubscriber:
+				subs = append(subs, cmd)
+			case PermissionVIP:
+				vips = append(vips, cmd)
+			}
+		}
+
+		sort.Strings(everyone)
+		sort.Strings(subs)
+		sort.Strings(vips)
+
+		var sb strings.Builder
+
+		// Everyone
+		if len(everyone) > 0 {
+			sb.WriteString(strings.Join(everyone, ", "))
+		}
+
+		// Subscribers
+		if len(subs) > 0 {
+			if sb.Len() > 0 { sb.WriteString(" / ") }
+			sb.WriteString("Subscribers: ")
+			sb.WriteString(strings.Join(subs, ", "))
+		}
+
+		// VIPs
+		if len(vips) > 0 {
+			if sb.Len() > 0 { sb.WriteString(" / ") }
+			sb.WriteString("Vips: ")
+			sb.WriteString(strings.Join(vips, ", "))
+		}
+
+		// Answer
+		response := sb.String()
+		if response == "" {
+			response = "No Commands, No party."
+		}
+		c.client.Say(message.Channel, response)
+		return
+	}
 
 	cmdData, exists := c.commands[commandName]
 	if !exists {
