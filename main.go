@@ -32,12 +32,10 @@ func main() {
 
 	// 4. Initialize Twitch API Client (EventSub)
 	monitorChannels := []string{cfg.Twitch.ChannelName}
-
 	twitchClient, err := twitch.NewClient(cfg.Twitch, monitorChannels, cfg.Server.BaseURL, hub, db)
 	if err != nil {
 		log.Printf("[ERROR] Twitch Client init failed: %v", err)
 	} else {
-		// Start EventSub monitoring
 		if err := twitchClient.StartMonitoring(monitorChannels); err != nil {
 			log.Printf("[ERROR] Twitch monitoring failed: %v", err)
 		}
@@ -53,10 +51,14 @@ func main() {
 	}
 
 	// 6. Initialize YouTube Client (Polling)
-	_ = youtube.NewClient(cfg.YouTube, hub, db)
+	youtubeClient, err := youtube.NewClient(cfg.YouTube, hub, db)
+	if err != nil {
+		log.Printf("[ERROR] YouTube Client init failed: %v", err)
+	} else if youtubeClient != nil {
+		youtubeClient.Start() // Phase A execution
+	}
 
 	// 7. Start the Private Test Server (e.g., Port 8001)
-	// This runs in a goroutine to allow the main server to block main thread
 	testPort := cfg.Server.TestPort
 	if testPort == "" {
 		testPort = "8001" // Default fallback
@@ -70,7 +72,6 @@ func main() {
 	}()
 
 	// 8. Start the Main Public Server (e.g., Port 8000)
-	// This blocks the main thread and serves public traffic (Webhooks, Overlay)
 	srv := server.NewServer(cfg, hub, twitchClient)
 	if err := srv.ListenAndServe(); err != nil {
 		log.Fatalf("[FATAL] Main HTTP Server error: %v", err)
