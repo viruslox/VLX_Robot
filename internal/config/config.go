@@ -59,6 +59,7 @@ type TwitchChatConfig struct {
 // YouTubeConfig defines API credentials for YouTube.
 type YouTubeConfig struct {
 	APIKey  string           `yaml:"api_key"`
+	ChannelID string         `yaml:"channel_id"`
 	Monitor MonitoringConfig `yaml:"monitor"`
 }
 
