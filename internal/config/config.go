@@ -60,6 +60,7 @@ type TwitchChatConfig struct {
 type YouTubeConfig struct {
 	APIKey  string           `yaml:"api_key"`
 	ChannelID string         `yaml:"channel_id"`
+	PollingInterval int      `yaml:"polling_interval"`
 	Monitor MonitoringConfig `yaml:"monitor"`
 }
 
