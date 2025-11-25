@@ -22,9 +22,6 @@ const (
 	PermissionVIP        = "vip"        // VIP/Mods
 )
 
-// Global Cooldown constant (15 seconds)
-const CommandCooldownDuration = 15 * time.Second
-
 // CommandData holds metadata for media commands
 type CommandData struct {
 	Filename   string
@@ -36,11 +33,12 @@ type AudioCommandsMap map[string]CommandData
 
 // ChatClient handles Twitch IRC connection
 type ChatClient struct {
-	config    config.TwitchChatConfig
-	hub       *websocket.Hub
-	client    *twitch.Client
-	commands  AudioCommandsMap
-	lastUsage map[string]time.Time // Tracks command cooldowns
+	config           config.TwitchChatConfig
+	hub              *websocket.Hub
+	client           *twitch.Client
+	commands         AudioCommandsMap
+	lastUsage        map[string]time.Time // Tracks command cooldowns
+	cooldownDuration time.Duration        // Configured cooldown
 }
 
 // ChatAlertPayload defines the JSON sent to the overlay
@@ -56,11 +54,18 @@ type EmoteWallPayload struct {
 }
 
 func NewChatClient(cfg config.TwitchChatConfig, hub *websocket.Hub, commands AudioCommandsMap) *ChatClient {
+	// Set a "safety default" in case the cooldown it is not set (or null) in the config file
+	cd := cfg.CommandCooldown
+	if cd <= 0 {
+		cd = 15 // Default a 15 secondi se non specificato
+	}
+
 	return &ChatClient{
-		config:    cfg,
-		hub:       hub,
-		commands:  commands,
-		lastUsage: make(map[string]time.Time), // Initialize cooldown map
+		config:           cfg,
+		hub:              hub,
+		commands:         commands,
+		lastUsage:        make(map[string]time.Time),
+		cooldownDuration: time.Duration(cd) * time.Second, // Conversione int -> Duration
 	}
 }
 
@@ -247,8 +252,9 @@ func (c *ChatClient) handlePrivateMessage(message twitch.PrivateMessage) {
 	}
 
 	// --- COOLDOWN CHECK ---
+	// Use c.cooldownDuration instead of constant
 	if lastUsed, ok := c.lastUsage[commandName]; ok {
-		if time.Since(lastUsed) < CommandCooldownDuration {
+		if time.Since(lastUsed) < c.cooldownDuration {
 			log.Printf("[INFO] [Chat] Command !%s is on cooldown. Ignored.", commandName)
 			return
 		}
