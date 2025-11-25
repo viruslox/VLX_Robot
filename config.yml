@@ -31,3 +31,7 @@ twitch:
 youtube:
   api_key: ""  # Leave empty to disable YouTube module
   channel_id: "UC..."
+  polling_interval: 5  # re-read chat every x seconds; the default is 5
+  monitor:
+    channel_ids: []
+    
