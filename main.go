@@ -51,11 +51,11 @@ func main() {
 	}
 
 	// 6. Initialize YouTube Client (Polling)
-	youtubeClient, err := youtube.NewClient(cfg.YouTube, hub, db)
+	youtubeClient, err := youtube.NewClient(cfg.YouTube, hub, db, cmdMap)
 	if err != nil {
 		log.Printf("[ERROR] YouTube Client init failed: %v", err)
 	} else if youtubeClient != nil {
-		youtubeClient.Start() // Phase A execution
+		youtubeClient.Start()
 	}
 
 	// 7. Start the Private Test Server (e.g., Port 8001)
