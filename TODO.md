@@ -8,12 +8,12 @@
 
 ### Phase A: Initialization & State Management
 
-- [ ] **Retrieve LiveChatID:**
+- [X] **Retrieve LiveChatID:**
   - Upon bot startup, query the YouTube `Videos` API.
   - Filter by `eventType=live` and `channelId` to find the current active stream.
   - Extract the `activeLiveChatId`.
 
-- [ ] **Persist State:**
+- [X] **Persist State:**
   - Save the `LiveChatID` to the PostgreSQL database (`youtube_state` table).
   - *Rationale:* ensures the bot can resume operations without re-querying the ID if the service restarts.
 
