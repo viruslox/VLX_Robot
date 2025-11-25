@@ -24,7 +24,6 @@ type ServerConfig struct {
 	// PathPrefix is the security string used by the Reverse Proxy (e.g., "/vlxrobot")
 	// It is NOT used for routing (Go listens on /), but for generating HTML links.
 	PathPrefix    string `yaml:"path_prefix"`
-
 	WebsocketPath string `yaml:"websocket_path"` // Internal endpoint (e.g., "/ws")
 }
 
@@ -54,6 +53,7 @@ type TwitchChatConfig struct {
 	BotUsername   string `yaml:"bot_username"`
 	BotOAuthToken string `yaml:"bot_token"`
 	ChannelToJoin string `yaml:"channel_to_join"`
+	CommandCooldown  int `yaml:"command_cooldown"`
 }
 
 // YouTubeConfig defines API credentials for YouTube.
