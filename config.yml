@@ -25,6 +25,7 @@ twitch:
     bot_username: "bot_name"
     bot_token: "oauth:IL_TUO_TOKEN"
     channel_to_join: "channel_name"
+    command_cooldown: 15  # General cooldown in seconds (default 15)
 
   # YouTube APIs
 youtube:
