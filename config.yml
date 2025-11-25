@@ -30,4 +30,4 @@ twitch:
   # YouTube APIs
 youtube:
   api_key: ""  # Leave empty to disable YouTube module
-  channel_id: "" # We have no use for it yet
+  channel_id: "UC..."
