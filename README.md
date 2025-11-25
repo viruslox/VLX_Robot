@@ -19,168 +19,194 @@ VLX_Robot/
 │   ├── database/         # Logic for PostgreSQL connection
 │   │   └── postgres.go   # (Saves state and tokens)
 │   ├── server/           # HTTP server logic
-│   │   └── server.go     # (Sets up routes: /ws, /static/*, /webhooks)
+│   │   ├── server.go     # (Sets up public routes: /ws, /static/*, /webhooks)
+│   │   └── test_server.go# (Private local server for manual alert testing)
 │   ├── websocket/        # WebSocket Hub logic
 │   │   ├── hub.go        # (Manages connections/broadcasts to overlays)
 │   │   └── client.go
-│   ├── twitch/           # Logic for Twitch EventSub
-│   │   └── eventsub.go
-│   └── youtube/          # Logic for YouTube API
-│       └── youtube.go
+│   ├── twitch/           # Logic for Twitch Integration
+│   │   ├── eventsub.go   # (Handles Webhooks: Follows, Subs, Raids)
+│   │   └── chat.go       # (Handles IRC: Chat commands !cmd, Cooldowns, Permissions)
+│   └── youtube/          # Logic for YouTube Integration
+│       └── youtube.go    # (Handles Polling: SuperChats, Sticker, Commands)
 │
 └── static/               # <-- THIS IS YOUR FRONTEND FOLDER
-    ├── overlay.html      # The HTML file you load into OBS
-    ├── overlay.css       # The styles for your alerts
-    └── overlay.js        # JS logic (WebSocket connection, show/hide alerts)
+    ├── overlay.css       # Shared styles for all overlays
+    ├── alerts_overlay.html # Visual overlay for Alerts (Follows, Subs, SuperChats)
+    ├── alerts_overlay.js   # Logic for visual alerts
+    ├── chat_overlay.html   # Hidden overlay for playing Audio/Video commands
+    ├── chat_overlay.js     # Logic for media playback
+    ├── emotes_overlay.html # Overlay for the floating "Emote Wall"
+    ├── emotes_overlay.js   # Logic for emote physics/animation
+    └── chat/             # Audio/Video assets storage
+        ├── everyone/     # Commands available to everyone
+        ├── subscribers/  # Commands for Subs only
+        └── vips/         # Commands for VIPs/Mods
 ```
 
-## 1. Installation
+## System Overview
 
-To install the necessary Go dependencies, run the following commands:
+The application operates as a standalone HTTP and WebSocket server. It ingests events from streaming platforms—via **EventSub Webhooks** for Twitch and **API Polling** for YouTube—and broadcasts normalized payloads to connected frontend clients (OBS Browser Sources). State persistence and token lifecycle management are handled via **PostgreSQL**.
 
-```bash
-go get gopkg.in/yaml.v3
-go get [github.com/lib/pq](https://github.com/lib/pq)
-go get [github.com/nicklaw5/helix/v2](https://github.com/nicklaw5/helix/v2)
-go get google.golang.org/api/option
-go get google.golang.org/api/youtube/v3
-go get [github.com/gorilla/websocket](https://github.com/gorilla/websocket)
+## Key Features
+
+### Twitch Integration
+
+  * **EventSub Webhooks:** Real-time processing of high-priority events including Follows, Subscriptions, Gift Subs, Cheers (Bits), and Raids.
+  * **Interactive Chat Bot:** Built-in IRC client that monitors chat for command triggers.
+  * **RBAC Audio/Video Commands:** Role-Based Access Control for media commands. Access levels are strictly enforced:
+      * **Everyone:** Public commands available to all users.
+      * **Subscribers:** Exclusive commands for active subscribers and founders.
+      * **VIPs/Mods:** Privileged commands for VIPs, Moderators, and the Broadcaster.
+  * **Emote Wall:** Automatic extraction of emotes from chat messages, rendered as floating animations on a dedicated overlay.
+
+### YouTube Live Integration
+
+  * **Live Chat Polling Engine:** A configurable polling mechanism (default 5s interval) that monitors the active live stream.
+  * **Monetization Alerts:** Detection and alerting for **Super Chats** and **Super Stickers**.
+  * **Cross-Platform Commands:** Support for text-triggered media commands (`!command`) within YouTube chat, mapping permissions to Moderators and Sponsors (Members).
+  * **State Persistence:** Automated tracking of `LiveChatID` and `NextPageToken` in PostgreSQL to ensure seamless resumption after service restarts.
+
+### Overlay System
+
+The frontend utilizes a low-latency WebSocket connection to render assets dynamically:
+
+  * **Alerts Overlay:** Displays visual notifications for monetization and engagement events.
+  * **Chat Media Overlay:** dedicated layer for playing audio/video assets triggered by chat commands.
+  * **Emote Wall Overlay:** Renders physics-based floating emotes based on real-time chat activity.
+
+-----
+
+## Prerequisites
+
+  * **Go:** Version 1.20 or higher.
+  * **PostgreSQL:** A running instance for data persistence.
+  * **Twitch Developer Application:** Required for Client ID, Client Secret, and User Access Tokens.
+  * **Google Cloud Project:** With **YouTube Data API v3** enabled and an API Key.
+  * **Reverse Proxy (Recommended):** Nginx or Apache with SSL termination (required for Twitch EventSub webhooks).
+
+-----
+
+## Configuration
+
+The system is driven by a `config.yml` file. Ensure all credentials are secured.
+
+### 1\. Base Configuration
+
+Define the server ports and the public-facing URL (critical for webhook verification).
+
+```yaml
+server:
+  base_url: "https://your-domain.com" # Public HTTPS URL
+  port: "8000"       # Public traffic (Webhooks/Overlay)
+  test_port: "8001"  # Private local testing endpoint
 ```
 
-Or, old but yet very good style:
-- Install dependencies
+### 2\. Twitch Authentication
+
+Requires a **User Access Token** with specific scopes (`channel:read:subscriptions`, `bits:read`, etc.) for full functionality.
+
+```yaml
+twitch:
+  client_id: "YOUR_CLIENT_ID"
+  client_secret: "YOUR_CLIENT_SECRET"
+  webhook_secret: "YOUR_RANDOM_SECRET_STRING"
+  user_access_token: "YOUR_GENERATED_USER_TOKEN"
+  chat:
+    bot_username: "BotAccountName"
+    bot_token: "oauth:YOUR_BOT_TOKEN"
+    channel_to_join: "TargetChannel"
+    command_cooldown: 15 # Global command cooldown in seconds
+```
+
+### 3\. YouTube Settings
+
+Configure the polling interval and target channel.
+
+```yaml
+youtube:
+  api_key: "YOUR_GOOGLE_API_KEY"
+  channel_id: "YOUR_CHANNEL_ID" # e.g., UCxxxxxxxxxxxx
+  polling_interval: 5 # Polling frequency in seconds (Min: 5, Max: 60)
+```
+
+-----
+
+## Installation & Deployment
+
+1.  **Clone the Repository:**
+
+    ```bash
+    git clone https://github.com/your-username/VLX_Robot.git
+    cd VLX_Robot
+    ```
+
+2.  **Install Dependencies:**
+
+    ```bash
+    go mod tidy
+    ```
+
+3.  **Database Setup:**
+    Ensure your PostgreSQL instance is running and the credentials in `config.yml` are correct. The application will manage its own tables (`twitch_credentials`, `twitch_subscriptions`, `youtube_state`).
+
+4.  **Build and Run:**
+
+    ```bash
+    go build -o vlx_robot main.go
+    ./vlx_robot
+    ```
+
+-----
+
+## Alternative (old style) build method:
 
 ```bash
-cp -R <path_to_VLX_Robot>/VLX_Robot ~/go/src/
-cd ~/go/src/VLX_Robot
+mkdir -p ~/go/src/
+cd ~/go/src/
+wget https://github.com/viruslox/VLX_Robot/archive/refs/heads/main.zip
+unzip main.zip && rm main.zip
+mv VLX_Robot* VLX_Robot
+cd VLX_Robot
 go mod init
 go mod tidy
 go build
 ```
 
-## 2. Configuration
+## OBS Studio Integration
 
-Before starting the server, you must configure the config.yml file.
+Add the following **Browser Sources** to your OBS scenes. Set the dimensions to your canvas size (e.g., 1920x1080).
 
-### A. Base Credentials
+1.  **Main Alerts:**
 
-Fill in the following fields in `config.yml`:
+      * URL: `http://localhost:8000/static/alerts_overlay.html`
+      * *Usage:* Handles Follows, Subs, Raids, and Super Chats.
 
-* **`server.port`**: The port the server will run on (e.g., `8888`).
-* **`server.base_url`**: The public HTTPS URL of your server. **Required** for Twitch webhooks. For local development, use a tunnel like `ngrok`.
-* **`database`**: Enter your PostgreSQL connection details.
-* **`twitch.client_id`** and **`twitch.client_secret`**: Get these by registering an app on the [Twitch Developer Console](https://dev.twitch.tv/console/apps).
-* **`twitch.webhook_secret`**: A long, random secret string created by you (used to verify Twitch requests).
-* **`youtube.api_key`**: Get this from the [Google Cloud Console](https://console.cloud.google.com/) by enabling the "YouTube Data API v3".
-* **`monitoring`**: Enter the channel login names to monitor.
+2.  **Chat Commands (Audio/Video):**
 
-### B. Twitch User Token (CRITICAL)
+      * URL: `http://localhost:8000/static/chat_overlay.html`
+      * *Usage:* Invisible layer that plays media when commands (e.g., `!sound`) are triggered.
+      * *Note:* Enable "Control audio via OBS" if you need to route audio through specific tracks.
 
-To receive private events like **subscriptions, bit donations, and resubs**, an App Token is not enough. You need a **User Access Token** with the correct scopes (permissions).
+3.  **Emote Wall:**
 
-1.  Open your browser and go to: `https://twitchtokengenerator.com`
-2.  Click the **"Get Token with Custom Scopes"** button.
-3.  On the next page, enter your **`Client ID`** (the same one you put in `config.yml`).
-4.  Below, in the "Scopes" list, check (at a minimum) these two:
-    * `channel:read:subscriptions`
-    * `bits:read`
-5.  Click **"Generate Token"**.
-6.  You will be redirected to Twitch. Click **"Authorize"**.
-7.  Copy the long string (the `access_token`) and paste it into the `user_access_token` field in your `config.yml`.
+      * URL: `http://localhost:8000/static/emotes_overlay.html`
+      * *Usage:* Renders floating emotes from chat messages.
 
+-----
 
-### C. Populate Alert Media
+## Asset Customization
 
-This script expects media files (GIFs, sounds) to exist. Make sure you:
+To add new chat commands, place media files (`.mp3`, `.wav`, `.mp4`, `.webm`) in the corresponding permission directories within `static/chat/`. The filename becomes the command trigger.
 
-1.  Create the `static/images/` and `static/sounds/` folders.
-2.  Place your files inside (e.g., `follow.gif`, `sub.mp3`, `cheer.gif`, etc.).
-3.  Verify that the file names match those "hard-coded" in the `static/overlay.js` file.
+  * **Public Commands:** Place files in `static/chat/everyone/`
+      * *Example:* `static/chat/everyone/hello.mp3` -\> Command: `!hello`
+  * **Subscriber Only:** Place files in `static/chat/subscribers/`
+  * **VIP/Mod Only:** Place files in `static/chat/vips/`
 
-## 3. Startup
+**Note:** The system automatically detects new files upon restart. Use the `!commands` command in chat to list available triggers for your permission level.
 
-1.  **Start ngrok (for local dev):** If testing locally, start a tunnel to your chosen port:
-    ```bash
-    ngrok http 8888
-    ```
-2.  **Update `config.yml`**: Copy the `https://...` URL provided by ngrok into the `base_url` field of your `config.yml`.
-3.  **Start the Go server**:
-    ```bash
-    go run main.go
-    ```
-4.  **Check the logs.** You should see the server start, connect to the DB, and register for Twitch events.
-
-
-## 4. Usage in OBS
-
-1.  Open OBS.
-2.  Add a new "Browser" source (Sorgente Browser).
-3.  In the "URL" box, enter the URL of your local overlay:
-    ```bash
-    http://localhost:8888/static/overlay.html
-    ```
-4.  Set the width and height (e.g., `1920` x `1080`).
-5.  Ensure "Control audio via OBS" is **checked** if you want to manage alert audio.
-6.  Click OK.
-
-
-## 5. Troubleshooting and Important Notes
-
-### Audio Autoplay (Common Problem)
-
-Browsers (including the one in OBS) have a strict autoplay policy for audio. The `audio.play()` line might fail silently.
-
-* **Solution 1 (Simple):** Right-click on your "Browser" source in OBS and choose **"Interact"**. Click once anywhere in the blank window. This "activates" the page, and sounds should work from then on.
-* **Solution 2 (Advanced):** If you use OBS 25 or newer, you can add a special flag to the OBS Launch Options to disable this restriction:
-    ```bash
-    --autoplay-policy=no-user-gesture-required
-    ```
-
-### CSS Dependency
-
-The `overlay.js` code is tightly coupled to your `overlay.css` file. Specifically, this line in `showAlert()`:
-`setTimeout(..., 500); // Must match the 'transition' in CSS`
-
-This `500` (milliseconds) **must** be identical to the transition time defined in your CSS (e.g., `transition: opacity 0.5s ease-out`). If you change the animation in CSS to `0.3s`, you must change this value to `300`, or the alerts will behave strangely.
-
-### Missing Files
-
-This script assumes all files (e.g., `/static/images/follow.gif`, `/static/sounds/alert.mp3`) exist. If a file is missing, the alert will still show but with a broken image or no sound (the `.catch()` on the audio prevents a crash). Ensure all paths and filenames are perfect.
-
-## Come personalizzare un evento (Esempio: "Raid")
-
-### Prepara i tuoi file:
-* Crea la tua immagine (es. mio_raid.gif) e mettila in static/images/.
-* Crea il tuo suono (es. allarme_raid.mp3) e mettilo in static/sounds/.
-
-### Modifica static/overlay.js:
-* Apri il file static/overlay.js.
-* Trova la funzione processQueue().
-    All'interno, cerca il switch (data.type) e trova il blocco case 'twitch_raid':.
-    Il codice originale è questo:
-```JavaScript
-case 'twitch_raid':
-    config.title = "Incoming Raid!"; [cite: 267]
-    config.detail = `${data.raider_name} is raiding with ${data.viewers} viewers!`; [cite: 268]
-    config.image = '/static/images/raid.gif'; [cite: 268]
-    config.sound = '/static/sounds/raid.mp3'; [cite: 268]
-    config.duration = 10000; [cite: 268]
-    break;
-```
-    Modificalo per usare i tuoi file e il tuo testo:
-```JavaScript
-
-case 'twitch_raid':
-    config.title = "ATTENZIONE: INVASIONE!"; // <-- Testo personalizzato
-    config.detail = `Ci raida ${data.raider_name}!`; // <-- Testo dettaglio personalizzato
-    config.image = '/static/images/mio_raid.gif'; // <-- TUA IMMAGINE
-    config.sound = '/static/sounds/allarme_raid.mp3'; // <-- TUO SUONO
-    config.duration = 7000; // <-- Durata personalizzata (in millisecondi)
-    break;
-```
-
-Puoi ripetere questo processo per ogni singolo case dentro il blocco switch, personalizzando il testo (config.title, config.detail), l'immagine (config.image), il suono (config.sound) e la durata (config.duration) per ogni tipo di alert .
-
+## Overlay self-test
 
 ### Twitch follow
 curl -X POST -d '{"type":"twitch_follow", "user_name":"UtenteDiTest"}' http://localhost:8001/test/alert
@@ -201,12 +227,4 @@ curl -X POST -d '{"type":"twitch_cheer", "user_name":"Tifoso", "bits":500, "mess
 
 curl -X POST -d '{"type":"youtube_member", "user_name":"MembroYT", "level":"Livello Fan"}' http://localhost:8001/test/alert
 
-curl -X POST -d '{"type":"stream_tip", "user_name":"DonatoreSegreto", "amount_string":"€20.00", "currency":"EUR", "message":"Grande live!"}' http://localhost:8001/test/alert
-
-# TODO & Roadmap
-Check the TODO.md file for the detailed development roadmap.
-[x] Basic Twitch EventSub
-[x] Twitch Chat Audio Commands
-[x] WebSocket Overlay System
-[ ] YouTube Live Chat Polling (In Progress)
-[ ] YouTube Member Alerts
+curl -X POST -d '{"type":"stream_tip", "user_name":"DonatoreSegreto", "amount_string":"€20.00", "currency":"EUR", "message":"Grande live!"}'
