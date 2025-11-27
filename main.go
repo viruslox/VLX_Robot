@@ -1,7 +1,6 @@
 package main
 
 import (
-	"log"
 	"path/filepath"
 
 	"VLX_Robot/internal/config"
@@ -10,70 +9,75 @@ import (
 	"VLX_Robot/internal/twitch"
 	"VLX_Robot/internal/websocket"
 	"VLX_Robot/internal/youtube"
+
+	"go.uber.org/zap"
 )
 
 func main() {
-	// 1. Load configuration
+	// 1. Initialize Structured Logger (Zap)
+	logger, _ := zap.NewProduction()
+	defer logger.Sync() // Flushes buffer, if any
+
+	// 2. Load configuration
 	cfg, err := config.Load("config.yml")
 	if err != nil {
-		log.Fatalf("[FATAL] Config load error: %v", err)
+		logger.Fatal("Config load error", zap.Error(err))
 	}
 
-	// 2. Initialize Database connection
-	db, err := database.NewConnection(cfg.Database)
+	// 3. Initialize Database connection
+	db, err := database.NewConnection(cfg.Database, logger)
 	if err != nil {
-		log.Fatalf("[FATAL] DB connection error: %v", err)
+		logger.Fatal("DB connection error", zap.Error(err))
 	}
 	defer db.Close()
 
-	// 3. Start WebSocket Hub
-	hub := websocket.NewHub()
+	// 4. Start WebSocket Hub
+	hub := websocket.NewHub(logger)
 	go hub.Run()
 
-	// 4. Initialize Twitch API Client (EventSub)
+	// 5. Initialize Twitch API Client (EventSub)
 	monitorChannels := []string{cfg.Twitch.ChannelName}
-	twitchClient, err := twitch.NewClient(cfg.Twitch, monitorChannels, cfg.Server.BaseURL, hub, db)
+	twitchClient, err := twitch.NewClient(cfg.Twitch, monitorChannels, cfg.Server.BaseURL, hub, db, logger)
 	if err != nil {
-		log.Printf("[ERROR] Twitch Client init failed: %v", err)
+		logger.Error("Twitch Client init failed", zap.Error(err))
 	} else {
 		if err := twitchClient.StartMonitoring(monitorChannels); err != nil {
-			log.Printf("[ERROR] Twitch monitoring failed: %v", err)
+			logger.Error("Twitch monitoring failed", zap.Error(err))
 		}
 	}
 
-	// 5. Initialize Twitch Chat Bot
-	cmdMap, err := twitch.ScanAudioCommands(filepath.Join("static", "chat"))
+	// 6. Initialize Twitch Chat Bot
+	cmdMap, err := twitch.ScanAudioCommands(filepath.Join("static", "chat"), logger)
 	if err != nil {
-		log.Printf("[WARN] Audio commands scan failed: %v", err)
+		logger.Warn("Audio commands scan failed", zap.Error(err))
 	} else {
-		chatClient := twitch.NewChatClient(cfg.Twitch.Chat, hub, cmdMap)
+		chatClient := twitch.NewChatClient(cfg.Twitch.Chat, hub, cmdMap, logger)
 		chatClient.Start()
 	}
 
-	// 6. Initialize YouTube Client (Polling)
-	youtubeClient, err := youtube.NewClient(cfg.YouTube, hub, db, cmdMap)
+	// 7. Initialize YouTube Client (Polling) with Rate Limiting
+	youtubeClient, err := youtube.NewClient(cfg.YouTube, hub, db, cmdMap, logger)
 	if err != nil {
-		log.Printf("[ERROR] YouTube Client init failed: %v", err)
+		logger.Error("YouTube Client init failed", zap.Error(err))
 	} else if youtubeClient != nil {
 		youtubeClient.Start()
 	}
 
-	// 7. Start the Private Test Server (e.g., Port 8001)
+	// 8. Start Private Test Server
 	testPort := cfg.Server.TestPort
 	if testPort == "" {
-		testPort = "8001" // Default fallback
+		testPort = "8001"
 	}
-
-	testSrv := server.NewTestServer(testPort, hub)
+	testSrv := server.NewTestServer(testPort, hub, logger)
 	go func() {
 		if err := testSrv.ListenAndServe(); err != nil {
-			log.Printf("[ERROR] Test Server failed: %v", err)
+			logger.Error("Test Server failed", zap.Error(err))
 		}
 	}()
 
-	// 8. Start the Main Public Server (e.g., Port 8000)
-	srv := server.NewServer(cfg, hub, twitchClient)
+	// 9. Start Main Public Server
+	srv := server.NewServer(cfg, hub, twitchClient, logger)
 	if err := srv.ListenAndServe(); err != nil {
-		log.Fatalf("[FATAL] Main HTTP Server error: %v", err)
+		logger.Fatal("Main HTTP Server error", zap.Error(err))
 	}
 }

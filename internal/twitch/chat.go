@@ -1,8 +1,8 @@
 package twitch
 
 import (
+	"context"
 	"encoding/json"
-	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -13,6 +13,8 @@ import (
 	"VLX_Robot/internal/websocket"
 
 	"github.com/gempir/go-twitch-irc/v4"
+	"go.uber.org/zap"
+	"golang.org/x/time/rate"
 )
 
 // Permission constants
@@ -39,6 +41,8 @@ type ChatClient struct {
 	commands         AudioCommandsMap
 	lastUsage        map[string]time.Time // Tracks command cooldowns
 	cooldownDuration time.Duration        // Configured cooldown
+	logger           *zap.Logger
+	sayLimiter       *rate.Limiter // Rate limiter for outgoing chat messages
 }
 
 // ChatAlertPayload defines the JSON sent to the overlay
@@ -53,24 +57,32 @@ type EmoteWallPayload struct {
 	Emotes []string `json:"emotes"`
 }
 
-func NewChatClient(cfg config.TwitchChatConfig, hub *websocket.Hub, commands AudioCommandsMap) *ChatClient {
-	// Set a "safety default" in case the cooldown it is not set (or null) in the config file
+// NewChatClient initializes the ChatClient with dependencies and rate limiters.
+func NewChatClient(cfg config.TwitchChatConfig, hub *websocket.Hub, commands AudioCommandsMap, logger *zap.Logger) *ChatClient {
+	// Set default cooldown if invalid
 	cd := cfg.CommandCooldown
 	if cd <= 0 {
-		cd = 15 // Default a 15 secondi se non specificato
+		cd = 15
 	}
+
+	// Initialize Rate Limiter for outgoing messages.
+	// Twitch limits: 20/30s for users, 100/30s for mods.
+	// We use a conservative bucket: 1 message per second, burst of 5.
+	limiter := rate.NewLimiter(rate.Every(time.Second), 5)
 
 	return &ChatClient{
 		config:           cfg,
 		hub:              hub,
 		commands:         commands,
 		lastUsage:        make(map[string]time.Time),
-		cooldownDuration: time.Duration(cd) * time.Second, // Conversione int -> Duration
+		cooldownDuration: time.Duration(cd) * time.Second,
+		logger:           logger,
+		sayLimiter:       limiter,
 	}
 }
 
-// ScanAudioCommands recursively scans command folders
-func ScanAudioCommands(baseDir string) (AudioCommandsMap, error) {
+// ScanAudioCommands recursively scans command folders to build the command map.
+func ScanAudioCommands(baseDir string, logger *zap.Logger) (AudioCommandsMap, error) {
 	commands := make(AudioCommandsMap)
 
 	folders := map[string]string{
@@ -88,7 +100,7 @@ func ScanAudioCommands(baseDir string) (AudioCommandsMap, error) {
 
 		files, err := os.ReadDir(fullPath)
 		if err != nil {
-			log.Printf("[WARN] Could not read folder '%s': %v", fullPath, err)
+			logger.Warn("Could not read command folder", zap.String("path", fullPath), zap.Error(err))
 			continue
 		}
 
@@ -114,7 +126,7 @@ func ScanAudioCommands(baseDir string) (AudioCommandsMap, error) {
 			relativePath := folderName + "/" + filename
 
 			if _, exists := commands[commandName]; exists {
-				log.Printf("[WARN] Duplicate command '!%s' in '%s'. Skipping.", commandName, relativePath)
+				logger.Warn("Duplicate command detected, skipping", zap.String("command", commandName), zap.String("path", relativePath))
 			} else {
 				commands[commandName] = CommandData{
 					Filename:   relativePath,
@@ -128,16 +140,17 @@ func ScanAudioCommands(baseDir string) (AudioCommandsMap, error) {
 	return commands, nil
 }
 
+// Start initiates the Twitch IRC connection.
 func (c *ChatClient) Start() {
-	log.Println("[INFO] [Chat] Connecting to Twitch IRC...")
+	c.logger.Info("Connecting to Twitch IRC...")
 	c.client = twitch.NewClient(c.config.BotUsername, c.config.BotOAuthToken)
-	// Force port 443 instead of standard 6697 to avoid fw issues
+	// Force port 443 (SSL)
 	c.client.IrcAddress = "irc.chat.twitch.tv:443"
 
 	c.client.OnPrivateMessage(c.handlePrivateMessage)
 
 	c.client.OnConnect(func() {
-		log.Printf("[INFO] [Chat] Connected to %s", c.config.ChannelToJoin)
+		c.logger.Info("Connected to IRC channel", zap.String("channel", c.config.ChannelToJoin))
 	})
 
 	c.client.Join(c.config.ChannelToJoin)
@@ -146,7 +159,7 @@ func (c *ChatClient) Start() {
 	go func() {
 		for {
 			if err := c.client.Connect(); err != nil {
-				log.Printf("[ERROR] [Chat] Connection failed: %v. Retrying in 10s...", err)
+				c.logger.Error("IRC Connection failed. Retrying in 10s...", zap.Error(err))
 				time.Sleep(10 * time.Second)
 			}
 		}
@@ -154,12 +167,12 @@ func (c *ChatClient) Start() {
 }
 
 func (c *ChatClient) handlePrivateMessage(message twitch.PrivateMessage) {
-	// 1. EMOTE WALL (reads all messages)
+	// 1. EMOTE WALL (Broadcasts valid emotes to WebSocket)
 	if len(message.Emotes) > 0 {
 		var emoteURLs []string
-		// used emotes list
 		for _, emote := range message.Emotes {
 			for i := 0; i < emote.Count; i++ {
+				// Twitch CDN URL format 3.0 (Scale)
 				url := "https://static-cdn.jtvnw.net/emoticons/v2/" + emote.ID + "/default/dark/3.0"
 				emoteURLs = append(emoteURLs, url)
 			}
@@ -183,60 +196,9 @@ func (c *ChatClient) handlePrivateMessage(message twitch.PrivateMessage) {
 	rawCommand := strings.Fields(message.Message)[0]
 	commandName := strings.ToLower(strings.TrimPrefix(rawCommand, "!"))
 
-	// 3. LIST COMMANDS Logic (!commands / !comandi)
+	// 3. LIST COMMANDS Logic (!commands)
 	if commandName == "commands" || commandName == "comandi" {
-		var everyone []string
-		var subs []string
-		var vips []string
-
-		// Create rank based command lists
-		for name, data := range c.commands {
-			cmd := "!" + name
-			switch data.Permission {
-			case PermissionEveryone:
-				everyone = append(everyone, cmd)
-			case PermissionSubscriber:
-				subs = append(subs, cmd)
-			case PermissionVIP:
-				vips = append(vips, cmd)
-			}
-		}
-
-		sort.Strings(everyone)
-		sort.Strings(subs)
-		sort.Strings(vips)
-
-		var sb strings.Builder
-
-		// Everyone
-		if len(everyone) > 0 {
-			sb.WriteString(strings.Join(everyone, ", "))
-		}
-
-		// Subscribers
-		if len(subs) > 0 {
-			if sb.Len() > 0 {
-				sb.WriteString(" / ")
-			}
-			sb.WriteString("Subscribers: ")
-			sb.WriteString(strings.Join(subs, ", "))
-		}
-
-		// VIPs
-		if len(vips) > 0 {
-			if sb.Len() > 0 {
-				sb.WriteString(" / ")
-			}
-			sb.WriteString("Vips: ")
-			sb.WriteString(strings.Join(vips, ", "))
-		}
-
-		// Answer
-		response := sb.String()
-		if response == "" {
-			response = "No Commands, No party."
-		}
-		c.client.Say(message.Channel, response)
+		c.handleListCommands(message.Channel)
 		return
 	}
 
@@ -252,17 +214,16 @@ func (c *ChatClient) handlePrivateMessage(message twitch.PrivateMessage) {
 	}
 
 	// --- COOLDOWN CHECK ---
-	// Use c.cooldownDuration instead of constant
 	if lastUsed, ok := c.lastUsage[commandName]; ok {
 		if time.Since(lastUsed) < c.cooldownDuration {
-			log.Printf("[INFO] [Chat] Command !%s is on cooldown. Ignored.", commandName)
+			c.logger.Info("Command on cooldown", zap.String("command", commandName), zap.String("user", message.User.Name))
 			return
 		}
 	}
 	c.lastUsage[commandName] = time.Now()
 	// ----------------------
 
-	log.Printf("[INFO] [Chat] !%s triggered by %s", commandName, message.User.Name)
+	c.logger.Info("Command triggered", zap.String("command", commandName), zap.String("user", message.User.Name))
 
 	payload := ChatAlertPayload{
 		Type:      "sound_command",
@@ -272,6 +233,63 @@ func (c *ChatClient) handlePrivateMessage(message twitch.PrivateMessage) {
 
 	payloadBytes, _ := json.Marshal(payload)
 	c.hub.Broadcast <- payloadBytes
+}
+
+// handleListCommands constructs and sends the list of available commands.
+func (c *ChatClient) handleListCommands(channel string) {
+	// Check outgoing rate limit before sending
+	if err := c.sayLimiter.Wait(context.Background()); err != nil {
+		c.logger.Warn("Rate limit exceeded for outgoing message", zap.Error(err))
+		return
+	}
+
+	var everyone []string
+	var subs []string
+	var vips []string
+
+	for name, data := range c.commands {
+		cmd := "!" + name
+		switch data.Permission {
+		case PermissionEveryone:
+			everyone = append(everyone, cmd)
+		case PermissionSubscriber:
+			subs = append(subs, cmd)
+		case PermissionVIP:
+			vips = append(vips, cmd)
+		}
+	}
+
+	sort.Strings(everyone)
+	sort.Strings(subs)
+	sort.Strings(vips)
+
+	var sb strings.Builder
+
+	if len(everyone) > 0 {
+		sb.WriteString(strings.Join(everyone, ", "))
+	}
+
+	if len(subs) > 0 {
+		if sb.Len() > 0 {
+			sb.WriteString(" / ")
+		}
+		sb.WriteString("Subscribers: ")
+		sb.WriteString(strings.Join(subs, ", "))
+	}
+
+	if len(vips) > 0 {
+		if sb.Len() > 0 {
+			sb.WriteString(" / ")
+		}
+		sb.WriteString("Vips: ")
+		sb.WriteString(strings.Join(vips, ", "))
+	}
+
+	response := sb.String()
+	if response == "" {
+		response = "No active commands found."
+	}
+	c.client.Say(channel, response)
 }
 
 // hasPermission checks Twitch badges against required level

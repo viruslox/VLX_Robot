@@ -17,14 +17,12 @@ type Config struct {
 // ServerConfig defines HTTP server settings.
 type ServerConfig struct {
 	Address       string `yaml:"address"`
-	Port          string `yaml:"port"`           // Main public port (e.g., 8000)
-	TestPort      string `yaml:"test_port"`      // Private test port (e.g., 8001)
-	BaseURL       string `yaml:"base_url"`       // Public URL for Webhooks
-
-	// PathPrefix is the security string used by the Reverse Proxy (e.g., "/vlxrobot")
-	// It is NOT used for routing (Go listens on /), but for generating HTML links.
+	Port          string `yaml:"port"`
+	TestPort      string `yaml:"test_port"`
+	BaseURL       string `yaml:"base_url"`
 	PathPrefix    string `yaml:"path_prefix"`
-	WebsocketPath string `yaml:"websocket_path"` // Internal endpoint (e.g., "/ws")
+	WebsocketPath string `yaml:"websocket_path"`
+	OverlayVolume int    `yaml:"overlay_volume"` // Added for volume control
 }
 
 // DatabaseConfig defines PostgreSQL connection settings.
@@ -50,18 +48,18 @@ type TwitchConfig struct {
 
 // TwitchChatConfig defines IRC bot credentials.
 type TwitchChatConfig struct {
-	BotUsername   string `yaml:"bot_username"`
-	BotOAuthToken string `yaml:"bot_token"`
-	ChannelToJoin string `yaml:"channel_to_join"`
-	CommandCooldown  int `yaml:"command_cooldown"`
+	BotUsername     string `yaml:"bot_username"`
+	BotOAuthToken   string `yaml:"bot_token"`
+	ChannelToJoin   string `yaml:"channel_to_join"`
+	CommandCooldown int    `yaml:"command_cooldown"`
 }
 
 // YouTubeConfig defines API credentials for YouTube.
 type YouTubeConfig struct {
-	APIKey  string           `yaml:"api_key"`
-	ChannelID string         `yaml:"channel_id"`
-	PollingInterval int      `yaml:"polling_interval"`
-	Monitor MonitoringConfig `yaml:"monitor"`
+	APIKey          string           `yaml:"api_key"`
+	ChannelID       string           `yaml:"channel_id"`
+	PollingInterval int              `yaml:"polling_interval"`
+	Monitor         MonitoringConfig `yaml:"monitor"`
 }
 
 // MonitoringConfig holds lists of IDs to monitor.

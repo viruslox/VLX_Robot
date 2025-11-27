@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"time"
 
@@ -18,6 +17,7 @@ import (
 	"VLX_Robot/internal/websocket"
 
 	"github.com/nicklaw5/helix/v2"
+	"go.uber.org/zap"
 )
 
 // EventSub constants
@@ -37,10 +37,11 @@ type Client struct {
 	hub         *websocket.Hub
 	db          *database.DB
 	selfBaseURL string
+	logger      *zap.Logger
 }
 
 // NewClient initializes the Twitch client with database-backed token management.
-func NewClient(cfg config.TwitchConfig, monitoringChannels []string, baseURL string, hub *websocket.Hub, db *database.DB) (*Client, error) {
+func NewClient(cfg config.TwitchConfig, monitoringChannels []string, baseURL string, hub *websocket.Hub, db *database.DB, logger *zap.Logger) (*Client, error) {
 	helixClient, err := helix.NewClient(&helix.Options{
 		ClientID:     cfg.ClientID,
 		ClientSecret: cfg.ClientSecret,
@@ -57,8 +58,12 @@ func NewClient(cfg config.TwitchConfig, monitoringChannels []string, baseURL str
 	helixClient.SetAppAccessToken(appToken.Data.AccessToken)
 
 	c := &Client{
-		helix: helixClient,
-		db:    db,
+		helix:       helixClient,
+		db:          db,
+		hub:         hub,
+		config:      cfg,
+		selfBaseURL: baseURL,
+		logger:      logger,
 	}
 
 	// 2. Verify User Permissions (using DB or Config)
@@ -69,7 +74,7 @@ func NewClient(cfg config.TwitchConfig, monitoringChannels []string, baseURL str
 
 	usersResp, err := helixClient.GetUsers(&helix.UsersParams{Logins: []string{primaryLogin}})
 	if err != nil || usersResp.StatusCode != http.StatusOK || len(usersResp.Data.Users) == 0 {
-		log.Printf("[ERROR] Could not resolve user ID for '%s'.", primaryLogin)
+		logger.Error("Could not resolve user ID", zap.String("login", primaryLogin))
 	}
 	var userID string
 	if len(usersResp.Data.Users) > 0 {
@@ -80,16 +85,16 @@ func NewClient(cfg config.TwitchConfig, monitoringChannels []string, baseURL str
 	if userID != "" {
 		err := c.maintainUserToken(userID, cfg)
 		if err != nil {
-			log.Printf("[WARN] User token maintenance failed: %v. EventSub might still work if App authorized.", err)
+			logger.Warn("User token maintenance failed. EventSub might still work if App authorized.", zap.Error(err))
 		}
 	} else {
 		// Fallback: Try to fix missing ID using config token if available
 		if cfg.UserAccessToken != "" {
-			log.Println("[INFO] Validating config token as fallback...")
+			logger.Info("Validating config token as fallback...")
 			helixClient.SetUserAccessToken(cfg.UserAccessToken)
 			isValid, _, _ := helixClient.ValidateToken(cfg.UserAccessToken)
 			if isValid {
-				log.Println("[INFO] Config token is valid.")
+				logger.Info("Config token is valid")
 			}
 			helixClient.SetUserAccessToken("")
 		}
@@ -97,11 +102,7 @@ func NewClient(cfg config.TwitchConfig, monitoringChannels []string, baseURL str
 
 	// 4. FINAL STEP: Ensure Client uses App Token
 	helixClient.SetUserAccessToken("")
-	log.Println("[INFO] Twitch Client initialized (Using App Access Token for EventSub).")
-
-	c.config = cfg
-	c.hub = hub
-	c.selfBaseURL = baseURL
+	logger.Info("Twitch Client initialized (App Access Token active)")
 
 	return c, nil
 }
@@ -112,7 +113,7 @@ func (c *Client) maintainUserToken(userID string, cfg config.TwitchConfig) error
 	if err != nil {
 		if err == sql.ErrNoRows {
 			if cfg.UserAccessToken != "" {
-				log.Println("[INFO] No DB record, but config token exists. Assuming initial setup.")
+				c.logger.Info("No DB record, but config token exists. Assuming initial setup.")
 				return nil
 			}
 			return errors.New("no credentials in DB and no config token")
@@ -121,14 +122,14 @@ func (c *Client) maintainUserToken(userID string, cfg config.TwitchConfig) error
 	}
 
 	if time.Now().UTC().After(creds.ExpiresAt) {
-		log.Println("[INFO] User access token expired in DB. Refreshing...")
+		c.logger.Info("User access token expired in DB. Refreshing...")
 		_, err := c.refreshToken(creds)
 		if err != nil {
 			return fmt.Errorf("refresh failed: %w", err)
 		}
-		log.Println("[INFO] User token refreshed in DB.")
+		c.logger.Info("User token refreshed in DB")
 	} else {
-		log.Println("[INFO] User token in DB is valid.")
+		c.logger.Info("User token in DB is valid")
 	}
 	return nil
 }
@@ -179,7 +180,7 @@ func (c *Client) StartMonitoring(channelLogins []string) error {
 	callbackURL := c.selfBaseURL + "/webhooks/twitch"
 
 	for _, user := range usersResp.Data.Users {
-		log.Printf("[INFO] Subscribing to events for: %s (ID: %s)", user.Login, user.ID)
+		c.logger.Info("Subscribing to events", zap.String("user", user.Login), zap.String("id", user.ID))
 		c.subscribeToEvent(user.ID, EventSubFollow, "2", callbackURL)
 		c.subscribeToRaidEvent(user.ID, callbackURL)
 		c.subscribeToEvent(user.ID, EventSubSubscribe, "1", callbackURL)
@@ -199,12 +200,12 @@ func (c *Client) subscribeToEvent(userID, eventType, version, callbackURL string
 
 	newSub, err := c.createSubscription(userID, eventType, version, callbackURL)
 	if err != nil {
-		log.Printf("[ERROR] Subscription failed for %s: %v", eventType, err)
+		c.logger.Error("Subscription failed", zap.String("type", eventType), zap.Error(err))
 		return
 	}
 
 	if err := c.saveSubscriptionToDB(userID, eventType, newSub); err != nil {
-		log.Printf("[INFO] synced subscription %s to DB.", eventType)
+		c.logger.Info("Synced subscription to DB", zap.String("type", eventType))
 	}
 }
 
@@ -217,12 +218,12 @@ func (c *Client) subscribeToRaidEvent(userID, callbackURL string) {
 
 	newSub, err := c.createRaidSubscription(userID, callbackURL)
 	if err != nil {
-		log.Printf("[ERROR] Raid subscription failed: %v", err)
+		c.logger.Error("Raid subscription failed", zap.Error(err))
 		return
 	}
 
 	if err := c.saveSubscriptionToDB(userID, EventSubRaid, newSub); err != nil {
-		log.Printf("[INFO] synced raid subscription to DB.")
+		c.logger.Info("Synced raid subscription to DB")
 	}
 }
 
@@ -288,10 +289,8 @@ func (c *Client) createRaidSubscription(userID, callbackURL string) (*helix.Even
 
 // fetchExistingSubscription retrieves all subs of a type and filters client-side to ensure we find it.
 func (c *Client) fetchExistingSubscription(userID, eventType string) (*helix.EventSubSubscription, error) {
-	// 1. Get ALL subscriptions of this type created by this client_id.
-	// We do NOT use the UserID API filter because it behaves inconsistently across event types (broadcaster vs moderator vs to_broadcaster).
 	opts := &helix.EventSubSubscriptionsParams{
-		Type:   eventType,
+		Type: eventType,
 	}
 
 	resp, err := c.helix.GetEventSubSubscriptions(opts)
@@ -299,13 +298,11 @@ func (c *Client) fetchExistingSubscription(userID, eventType string) (*helix.Eve
 		return nil, fmt.Errorf("failed to fetch existing sub list: %w", err)
 	}
 
-	// 2. Loop through results and find the one matching our UserID in the Condition.
 	for _, sub := range resp.Data.EventSubSubscriptions {
-
 		// Special handling for Raid: The "UserID" we track is the TARGET of the raid (ToBroadcasterUserID)
 		if eventType == EventSubRaid {
 			if sub.Condition.ToBroadcasterUserID == userID {
-				log.Printf("[INFO] Found existing Raid subscription: %s (Status: %s)", sub.ID, sub.Status)
+				c.logger.Info("Found existing Raid subscription", zap.String("id", sub.ID), zap.String("status", sub.Status))
 				return &sub, nil
 			}
 			continue
@@ -313,7 +310,7 @@ func (c *Client) fetchExistingSubscription(userID, eventType string) (*helix.Eve
 
 		// Standard handling: The "UserID" is the BroadcasterUserID
 		if sub.Condition.BroadcasterUserID == userID {
-			log.Printf("[INFO] Found existing subscription for %s: %s (Status: %s)", eventType, sub.ID, sub.Status)
+			c.logger.Info("Found existing subscription", zap.String("type", eventType), zap.String("id", sub.ID), zap.String("status", sub.Status))
 			return &sub, nil
 		}
 	}
@@ -352,43 +349,43 @@ func (c *Client) HandleEventSubCallback(w http.ResponseWriter, r *http.Request) 
 	messageType := r.Header.Get("Twitch-Eventsub-Message-Type")
 
 	switch messageType {
-		case "webhook_callback_verification":
-			var verification struct {
-				Challenge string `json:"challenge"`
-			}
-			if err := json.Unmarshal(body, &verification); err == nil {
-				w.WriteHeader(http.StatusOK)
-				w.Write([]byte(verification.Challenge))
-			} else {
-				http.Error(w, "Bad Request", http.StatusBadRequest)
-			}
+	case "webhook_callback_verification":
+		var verification struct {
+			Challenge string `json:"challenge"`
+		}
+		if err := json.Unmarshal(body, &verification); err == nil {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(verification.Challenge))
+		} else {
+			http.Error(w, "Bad Request", http.StatusBadRequest)
+		}
 
-		case "notification":
-			var notification struct {
-				Subscription helix.EventSubSubscription `json:"subscription"`
-				Event        json.RawMessage            `json:"event"`
-			}
-			if err := json.Unmarshal(body, &notification); err == nil {
-				c.handleNotification(notification.Subscription.Type, notification.Event)
-				w.WriteHeader(http.StatusOK)
-				w.Write([]byte("OK"))
-			} else {
-				http.Error(w, "Bad Request", http.StatusBadRequest)
-			}
-
-		case "revocation":
-			var revocation struct {
-				Subscription helix.EventSubSubscription `json:"subscription"`
-			}
-			if err := json.Unmarshal(body, &revocation); err == nil {
-				log.Printf("[WARN] Subscription revoked: %s", revocation.Subscription.ID)
-				c.db.DeleteSubscription(revocation.Subscription.ID)
-			}
+	case "notification":
+		var notification struct {
+			Subscription helix.EventSubSubscription `json:"subscription"`
+			Event        json.RawMessage            `json:"event"`
+		}
+		if err := json.Unmarshal(body, &notification); err == nil {
+			c.handleNotification(notification.Subscription.Type, notification.Event)
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte("OK"))
+		} else {
+			http.Error(w, "Bad Request", http.StatusBadRequest)
+		}
 
-		default:
-			w.WriteHeader(http.StatusOK)
+	case "revocation":
+		var revocation struct {
+			Subscription helix.EventSubSubscription `json:"subscription"`
+		}
+		if err := json.Unmarshal(body, &revocation); err == nil {
+			c.logger.Warn("Subscription revoked", zap.String("id", revocation.Subscription.ID))
+			c.db.DeleteSubscription(revocation.Subscription.ID)
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+
+	default:
+		w.WriteHeader(http.StatusOK)
 	}
 }
 
@@ -417,68 +414,68 @@ func (c *Client) handleNotification(eventType string, eventData json.RawMessage)
 	var err error
 
 	switch eventType {
-		case EventSubFollow:
-			var e helix.EventSubChannelFollowEvent
-			if err = json.Unmarshal(eventData, &e); err == nil {
-				payload = map[string]interface{}{
-					"type":      "twitch_follow",
-					"user_name": e.UserName,
-				}
+	case EventSubFollow:
+		var e helix.EventSubChannelFollowEvent
+		if err = json.Unmarshal(eventData, &e); err == nil {
+			payload = map[string]interface{}{
+				"type":      "twitch_follow",
+				"user_name": e.UserName,
 			}
-		case EventSubSubscribe:
-			var e helix.EventSubChannelSubscribeEvent
-			if err = json.Unmarshal(eventData, &e); err == nil {
-				payload = map[string]interface{}{
-					"type":      "twitch_subscribe",
-					"user_name": e.UserName,
-					"tier":      e.Tier,
-					"is_gift":   e.IsGift,
-				}
+		}
+	case EventSubSubscribe:
+		var e helix.EventSubChannelSubscribeEvent
+		if err = json.Unmarshal(eventData, &e); err == nil {
+			payload = map[string]interface{}{
+				"type":      "twitch_subscribe",
+				"user_name": e.UserName,
+				"tier":      e.Tier,
+				"is_gift":   e.IsGift,
 			}
-		case EventSubSubMessage:
-			var e helix.EventSubChannelSubscriptionMessageEvent
-			if err = json.Unmarshal(eventData, &e); err == nil {
-				payload = map[string]interface{}{
-					"type":              "twitch_resubscribe",
-					"user_name":         e.UserName,
-					"tier":              e.Tier,
-					"message":           e.Message.Text,
-					"cumulative_months": e.CumulativeMonths,
-				}
+		}
+	case EventSubSubMessage:
+		var e helix.EventSubChannelSubscriptionMessageEvent
+		if err = json.Unmarshal(eventData, &e); err == nil {
+			payload = map[string]interface{}{
+				"type":              "twitch_resubscribe",
+				"user_name":         e.UserName,
+				"tier":              e.Tier,
+				"message":           e.Message.Text,
+				"cumulative_months": e.CumulativeMonths,
 			}
-		case EventSubSubGift:
-			var e helix.EventSubChannelSubscriptionGiftEvent
-			if err = json.Unmarshal(eventData, &e); err == nil {
-				payload = map[string]interface{}{
-					"type":        "twitch_gift_sub",
-					"gifter_name": e.UserName,
-					"total_gifts": e.Total,
-					"tier":        e.Tier,
-				}
+		}
+	case EventSubSubGift:
+		var e helix.EventSubChannelSubscriptionGiftEvent
+		if err = json.Unmarshal(eventData, &e); err == nil {
+			payload = map[string]interface{}{
+				"type":        "twitch_gift_sub",
+				"gifter_name": e.UserName,
+				"total_gifts": e.Total,
+				"tier":        e.Tier,
 			}
-		case EventSubCheer:
-			var e helix.EventSubChannelCheerEvent
-			if err = json.Unmarshal(eventData, &e); err == nil {
-				payload = map[string]interface{}{
-					"type":      "twitch_cheer",
-					"user_name": e.UserName,
-					"bits":      e.Bits,
-					"message":   e.Message,
-				}
+		}
+	case EventSubCheer:
+		var e helix.EventSubChannelCheerEvent
+		if err = json.Unmarshal(eventData, &e); err == nil {
+			payload = map[string]interface{}{
+				"type":      "twitch_cheer",
+				"user_name": e.UserName,
+				"bits":      e.Bits,
+				"message":   e.Message,
 			}
-		case EventSubRaid:
-			var e helix.EventSubChannelRaidEvent
-			if err = json.Unmarshal(eventData, &e); err == nil {
-				payload = map[string]interface{}{
-					"type":        "twitch_raid",
-					"raider_name": e.FromBroadcasterUserName,
-					"viewers":     e.Viewers,
-				}
+		}
+	case EventSubRaid:
+		var e helix.EventSubChannelRaidEvent
+		if err = json.Unmarshal(eventData, &e); err == nil {
+			payload = map[string]interface{}{
+				"type":        "twitch_raid",
+				"raider_name": e.FromBroadcasterUserName,
+				"viewers":     e.Viewers,
 			}
+		}
 	}
 
 	if err != nil {
-		log.Printf("[ERROR] Failed to parse event %s: %v", eventType, err)
+		c.logger.Error("Failed to parse event", zap.String("type", eventType), zap.Error(err))
 		return
 	}
 	if payload != nil {

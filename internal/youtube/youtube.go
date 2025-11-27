@@ -5,23 +5,23 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
 	"VLX_Robot/internal/config"
 	"VLX_Robot/internal/database"
-	"VLX_Robot/internal/twitch" // Import necessario per usare CommandData
+	"VLX_Robot/internal/twitch"
 	"VLX_Robot/internal/websocket"
 
+	"go.uber.org/zap"
+	"golang.org/x/time/rate" // Rate Limiting Package
 	"google.golang.org/api/option"
 	"google.golang.org/api/youtube/v3"
 )
 
-// Constants for Polling Limits
 const (
-	MinPollingInterval     = 5  // seconds
-	MaxPollingInterval     = 60 // seconds
+	MinPollingInterval     = 5
+	MaxPollingInterval     = 60
 	DefaultPollingInterval = 5
 )
 
@@ -32,25 +32,27 @@ type Client struct {
 	pollingInterval time.Duration
 	hub             *websocket.Hub
 	db              *database.DB
-	commands        twitch.AudioCommandsMap // Mappa dei comandi condivisa
+	commands        twitch.AudioCommandsMap
+	logger          *zap.Logger
+	limiter         *rate.Limiter // Rate Limiter
 }
 
-// NewClient initializes the YouTube client structure and API service
-func NewClient(cfg config.YouTubeConfig, hub *websocket.Hub, db *database.DB, commands twitch.AudioCommandsMap) (*Client, error) {
-	// Check if API Key is provided. If not, disable the module gracefully.
+func NewClient(cfg config.YouTubeConfig, hub *websocket.Hub, db *database.DB, commands twitch.AudioCommandsMap, logger *zap.Logger) (*Client, error) {
 	if cfg.APIKey == "" {
-		log.Println("[INFO] YouTube module disabled (No API Key provided)")
+		logger.Info("YouTube module disabled (No API Key provided)")
 		return nil, nil
 	}
 
 	if cfg.ChannelID == "" {
-		log.Println("[WARN] YouTube Channel ID is missing in config. Polling will fail.")
+		logger.Warn("YouTube Channel ID is missing in config. Polling will fail.")
 	}
 
-	// Validate Polling Interval
 	interval := cfg.PollingInterval
 	if interval < MinPollingInterval || interval > MaxPollingInterval {
-		log.Printf("[WARN] Invalid polling interval (%d). Using default: %ds", interval, DefaultPollingInterval)
+		logger.Warn("Invalid polling interval, using default",
+			zap.Int("provided", interval),
+			zap.Int("default", DefaultPollingInterval),
+		)
 		interval = DefaultPollingInterval
 	}
 
@@ -60,6 +62,10 @@ func NewClient(cfg config.YouTubeConfig, hub *websocket.Hub, db *database.DB, co
 		return nil, fmt.Errorf("failed to create YouTube service: %w", err)
 	}
 
+	// Rate Limiter: Allow 1 request every second, with a burst of 2.
+	// This protects against loop malfunctions.
+	limiter := rate.NewLimiter(rate.Every(1*time.Second), 2)
+
 	return &Client{
 		service:         service,
 		apiKey:          cfg.APIKey,
@@ -68,34 +74,35 @@ func NewClient(cfg config.YouTubeConfig, hub *websocket.Hub, db *database.DB, co
 		hub:             hub,
 		db:              db,
 		commands:        commands,
+		logger:          logger,
+		limiter:         limiter,
 	}, nil
 }
 
-// Start initiates the initialization and then the polling loop
 func (c *Client) Start() {
 	if c == nil {
 		return
 	}
 
 	go func() {
-		log.Println("[INFO] [YouTube] Starting initialization...")
+		c.logger.Info("Starting YouTube module initialization...")
 
-		// Phase A: Retrieve and Persist LiveChatID
 		if err := c.ensureLiveChatID(); err != nil {
-			log.Printf("[ERROR] [YouTube] Initialization failed: %v. Polling will NOT start.", err)
+			c.logger.Error("YouTube Initialization failed. Polling halted.", zap.Error(err))
 			return
 		}
-		
-		log.Println("[INFO] [YouTube] Live Chat ID initialized. Starting Polling Engine...")
-		
-		// Phase B: Start Polling
+
+		c.logger.Info("YouTube Live Chat ID initialized. Starting Polling Engine.")
 		c.startPolling()
 	}()
 }
 
-// ensureLiveChatID finds the current live stream and saves its Chat ID to DB
 func (c *Client) ensureLiveChatID() error {
-	// 1. Search for an active live stream on the channel
+	// Rate Limit Check
+	if err := c.limiter.Wait(context.Background()); err != nil {
+		return err
+	}
+
 	call := c.service.Search.List([]string{"id"}).
 		ChannelId(c.channelID).
 		EventType("live").
@@ -112,9 +119,13 @@ func (c *Client) ensureLiveChatID() error {
 	}
 
 	videoID := response.Items[0].Id.VideoId
-	log.Printf("[INFO] [YouTube] Found active live stream: %s", videoID)
+	c.logger.Info("Found active live stream", zap.String("videoID", videoID))
 
-	// 2. Get the video details to find the activeLiveChatId
+	// Rate Limit Check before next call
+	if err := c.limiter.Wait(context.Background()); err != nil {
+		return err
+	}
+
 	videoCall := c.service.Videos.List([]string{"liveStreamingDetails"}).Id(videoID)
 	videoResponse, err := videoCall.Do()
 	if err != nil {
@@ -127,13 +138,12 @@ func (c *Client) ensureLiveChatID() error {
 
 	details := videoResponse.Items[0].LiveStreamingDetails
 	if details == nil || details.ActiveLiveChatId == "" {
-		return fmt.Errorf("live stream exists but has no active chat (or chat is disabled)")
+		return fmt.Errorf("live stream exists but has no active chat")
 	}
 
 	liveChatID := details.ActiveLiveChatId
-	log.Printf("[INFO] [YouTube] Found LiveChatID: %s", liveChatID)
+	c.logger.Info("Found LiveChatID", zap.String("liveChatID", liveChatID))
 
-	// 3. Persist to Database
 	state := &database.YouTubeState{
 		ChannelID:  c.channelID,
 		LiveChatID: sql.NullString{String: liveChatID, Valid: true},
@@ -147,21 +157,23 @@ func (c *Client) ensureLiveChatID() error {
 	return nil
 }
 
-// startPolling runs the main ticker loop
 func (c *Client) startPolling() {
 	ticker := time.NewTicker(c.pollingInterval)
 	defer ticker.Stop()
 
 	for range ticker.C {
 		if err := c.pollChat(); err != nil {
-			log.Printf("[ERROR] [YouTube] Polling cycle failed: %v", err)
+			c.logger.Error("YouTube polling cycle failed", zap.Error(err))
 		}
 	}
 }
 
-// pollChat performs a single API check
 func (c *Client) pollChat() error {
-	// 1. Get current state (ChatID + NextPageToken)
+	// Rate Limit Check
+	if err := c.limiter.Wait(context.Background()); err != nil {
+		return fmt.Errorf("rate limiter error: %w", err)
+	}
+
 	state, err := c.db.GetYouTubeState(c.channelID)
 	if err != nil {
 		return fmt.Errorf("failed to get state: %w", err)
@@ -172,21 +184,17 @@ func (c *Client) pollChat() error {
 	}
 	liveChatID := state.LiveChatID.String
 
-	// 2. Prepare API Call
 	call := c.service.LiveChatMessages.List(liveChatID, []string{"snippet", "authorDetails"}).MaxResults(200)
 
-	// Important: Use page token if available
 	if state.NextPageToken.Valid && state.NextPageToken.String != "" {
 		call.PageToken(state.NextPageToken.String)
 	}
 
-	// 3. Execute API Call
 	response, err := call.Do()
 	if err != nil {
 		return fmt.Errorf("API call failed: %w", err)
 	}
 
-	// 4. Update State (NextPageToken)
 	newState := &database.YouTubeState{
 		ChannelID:     c.channelID,
 		LiveChatID:    state.LiveChatID,
@@ -194,10 +202,9 @@ func (c *Client) pollChat() error {
 		UpdatedAt:     time.Now(),
 	}
 	if err := c.db.UpsertYouTubeState(newState); err != nil {
-		log.Printf("[WARN] [YouTube] Failed to save NextPageToken: %v", err)
+		c.logger.Warn("Failed to save NextPageToken", zap.Error(err))
 	}
 
-	// 5. Process Messages
 	if len(response.Items) > 0 {
 		c.processMessages(response.Items)
 	}
@@ -205,13 +212,12 @@ func (c *Client) pollChat() error {
 	return nil
 }
 
-// processMessages iterates through chat items and triggers events
 func (c *Client) processMessages(items []*youtube.LiveChatMessage) {
 	for _, item := range items {
 		snippet := item.Snippet
 		author := item.AuthorDetails
 
-		// --- A. Handle Super Chats (Monetization) ---
+		// Handle Super Chats
 		if snippet.SuperChatDetails != nil {
 			payload := map[string]interface{}{
 				"type":          "youtube_super_chat",
@@ -221,11 +227,14 @@ func (c *Client) processMessages(items []*youtube.LiveChatMessage) {
 				"tier":          snippet.SuperChatDetails.Tier,
 			}
 			c.broadcast(payload)
-			log.Printf("[INFO] [YouTube] Super Chat: %s sent %s", author.DisplayName, snippet.SuperChatDetails.AmountDisplayString)
+			c.logger.Info("Super Chat detected",
+				zap.String("user", author.DisplayName),
+				zap.String("amount", snippet.SuperChatDetails.AmountDisplayString),
+			)
 			continue
 		}
 
-		// --- B. Handle Super Stickers (Monetization) ---
+		// Handle Super Stickers
 		if snippet.SuperStickerDetails != nil {
 			payload := map[string]interface{}{
 				"type":          "youtube_super_sticker",
@@ -234,18 +243,17 @@ func (c *Client) processMessages(items []*youtube.LiveChatMessage) {
 				"sticker_alt":   snippet.SuperStickerDetails.SuperStickerMetadata.AltText,
 			}
 			c.broadcast(payload)
-			log.Printf("[INFO] [YouTube] Super Sticker from %s", author.DisplayName)
+			c.logger.Info("Super Sticker detected", zap.String("user", author.DisplayName))
 			continue
 		}
 
-		// --- C. Handle Text Commands (Interaction) ---
+		// Handle Text Commands
 		if snippet.DisplayMessage != "" && strings.HasPrefix(snippet.DisplayMessage, "!") {
 			c.handleCommand(snippet.DisplayMessage, author)
 		}
 	}
 }
 
-// handleCommand checks text against the audio command map
 func (c *Client) handleCommand(message string, author *youtube.LiveChatMessageAuthorDetails) {
 	rawCommand := strings.Fields(message)[0]
 	commandName := strings.ToLower(strings.TrimPrefix(rawCommand, "!"))
@@ -255,18 +263,13 @@ func (c *Client) handleCommand(message string, author *youtube.LiveChatMessageAu
 		return
 	}
 
-	// Permission Check (Simplified Mapping for YouTube)
-	// YouTube doesn't have "Subscriber" in the same API field easily accessible without extra calls.
-	// We map: Moderator -> VIP/Mod, Member -> Subscriber.
 	hasPerm := false
-	
 	switch cmdData.Permission {
 	case twitch.PermissionEveryone:
 		hasPerm = true
 	case twitch.PermissionVIP:
 		hasPerm = author.IsChatModerator || author.IsChatOwner
 	case twitch.PermissionSubscriber:
-		// Note: 'IsChatSponsor' is the old field for 'Member'
 		hasPerm = author.IsChatSponsor || author.IsChatModerator || author.IsChatOwner
 	}
 
@@ -274,20 +277,18 @@ func (c *Client) handleCommand(message string, author *youtube.LiveChatMessageAu
 		return
 	}
 
-	log.Printf("[INFO] [YouTube] Command !%s triggered by %s", commandName, author.DisplayName)
+	c.logger.Info("YouTube Command Triggered", zap.String("command", commandName), zap.String("user", author.DisplayName))
 
 	payload := twitch.ChatAlertPayload{
 		Type:      "sound_command",
 		Filename:  cmdData.Filename,
 		MediaType: cmdData.MediaType,
 	}
-	
-	// Serialize manually to match the hub input type
+
 	data, _ := json.Marshal(payload)
 	c.hub.Broadcast <- data
 }
 
-// broadcast sends a map payload to the WebSocket hub
 func (c *Client) broadcast(payload map[string]interface{}) {
 	data, err := json.Marshal(payload)
 	if err == nil {

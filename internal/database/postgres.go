@@ -7,14 +7,14 @@ import (
 
 	"VLX_Robot/internal/config"
 
-	// This blank import registers the postgres driver
 	_ "github.com/lib/pq"
+	"go.uber.org/zap"
 )
 
 // DB is a wrapper around the sql.DB connection pool.
-// It holds our database logic.
 type DB struct {
-	sql *sql.DB
+	sql    *sql.DB
+	logger *zap.Logger
 }
 
 // TwitchCredentials maps to the 'twitch_credentials' table
@@ -37,61 +37,45 @@ type TwitchSubscription struct {
 // YouTubeState maps to the 'youtube_state' table
 type YouTubeState struct {
 	ChannelID     string
-	LiveChatID    sql.NullString // Use sql.NullString for nullable TEXT fields
+	LiveChatID    sql.NullString
 	NextPageToken sql.NullString
 	UpdatedAt     time.Time
 }
 
-// NewConnection creates, configures, and tests a new connection
-// pool to the PostgreSQL database.
-func NewConnection(cfg config.DatabaseConfig) (*DB, error) {
-
-	// 1. Build the connection string (DSN - Data Source Name)
+// NewConnection creates, configures, and tests a new connection.
+func NewConnection(cfg config.DatabaseConfig, logger *zap.Logger) (*DB, error) {
 	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-		cfg.Host,
-		cfg.Port,
-		cfg.User,
-		cfg.Password,
-		cfg.DBName,
-		cfg.SSLMode,
+		cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.DBName, cfg.SSLMode,
 	)
 
-	// 2. Open the connection pool
 	sqlDB, err := sql.Open("postgres", dsn)
 	if err != nil {
-		return nil, fmt.Errorf("[ERROR] : Failed to prepare DB connection: %w", err)
+		return nil, fmt.Errorf("failed to open DB connection: %w", err)
 	}
 
-	// 3. Verify the connection
 	if err = sqlDB.Ping(); err != nil {
 		sqlDB.Close()
-		return nil, fmt.Errorf("[ERROR] : Failed to ping DB (check credentials/host): %w", err)
+		return nil, fmt.Errorf("failed to ping DB: %w", err)
 	}
 
-	// 4. Return our wrapped DB struct
-	return &DB{sql: sqlDB}, nil
+	logger.Info("Database connection established")
+	return &DB{sql: sqlDB, logger: logger}, nil
 }
 
 // Close gracefully closes the database connection pool.
 func (db *DB) Close() {
-	db.sql.Close()
+	if err := db.sql.Close(); err != nil {
+		db.logger.Error("Error closing DB", zap.Error(err))
+	}
 }
 
-// --- Twitch Credentials ---
-
-// GetTwitchCredentials retrieves credentials for a specific user.
-// Returns sql.ErrNoRows if not found.
 func (db *DB) GetTwitchCredentials(userID string) (*TwitchCredentials, error) {
 	creds := &TwitchCredentials{UserID: userID}
 	query := `SELECT access_token, refresh_token, expires_at FROM twitch_credentials WHERE user_id = $1`
 	err := db.sql.QueryRow(query, userID).Scan(&creds.AccessToken, &creds.RefreshToken, &creds.ExpiresAt)
-	if err != nil {
-		return nil, err
-	}
-	return creds, nil
+	return creds, err
 }
 
-// UpsertTwitchCredentials inserts or updates credentials for a user.
 func (db *DB) UpsertTwitchCredentials(creds *TwitchCredentials) error {
 	query := `
 		INSERT INTO twitch_credentials (user_id, access_token, refresh_token, expires_at)
@@ -105,10 +89,6 @@ func (db *DB) UpsertTwitchCredentials(creds *TwitchCredentials) error {
 	return err
 }
 
-// --- Twitch Subscriptions ---
-
-// GetSubscription checks if a subscription already exists and is enabled.
-// Returns sql.ErrNoRows if not found.
 func (db *DB) GetSubscription(userID, eventType string) (*TwitchSubscription, error) {
 	sub := &TwitchSubscription{}
 	query := `SELECT id, status, created_at FROM twitch_subscriptions WHERE user_id = $1 AND event_type = $2`
@@ -121,7 +101,6 @@ func (db *DB) GetSubscription(userID, eventType string) (*TwitchSubscription, er
 	return sub, nil
 }
 
-// CreateSubscription stores a newly created subscription.
 func (db *DB) CreateSubscription(sub *TwitchSubscription) error {
 	query := `
 		INSERT INTO twitch_subscriptions (id, user_id, event_type, status, created_at)
@@ -131,28 +110,19 @@ func (db *DB) CreateSubscription(sub *TwitchSubscription) error {
 	return err
 }
 
-// DeleteSubscription removes a subscription, typically on revocation
 func (db *DB) DeleteSubscription(subscriptionID string) error {
 	query := `DELETE FROM twitch_subscriptions WHERE id = $1`
 	_, err := db.sql.Exec(query, subscriptionID)
 	return err
 }
 
-// --- YouTube State ---
-
-// GetYouTubeState retrieves the last known state for a YouTube channel.
-// Returns sql.ErrNoRows if not found.
 func (db *DB) GetYouTubeState(channelID string) (*YouTubeState, error) {
 	state := &YouTubeState{ChannelID: channelID}
 	query := `SELECT live_chat_id, next_page_token, updated_at FROM youtube_state WHERE channel_id = $1`
 	err := db.sql.QueryRow(query, channelID).Scan(&state.LiveChatID, &state.NextPageToken, &state.UpdatedAt)
-	if err != nil {
-		return nil, err
-	}
-	return state, nil
+	return state, err
 }
 
-// UpsertYouTubeState inserts or updates the polling state for a channel.
 func (db *DB) UpsertYouTubeState(state *YouTubeState) error {
 	query := `
 		INSERT INTO youtube_state (channel_id, live_chat_id, next_page_token, updated_at)
