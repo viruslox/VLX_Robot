@@ -7,26 +7,22 @@
     <script>
         window.VLX_CONFIG = {
             WEBSOCKET_PATH: "{{.WebsocketPath}}",
-            ASSET_PREFIX: "{{.AssetPrefix}}"
+            ASSET_PREFIX: "{{.AssetPrefix}}",
+            VOLUME: {{.Volume}}
         };
     </script>
 <link rel="stylesheet" href="{{.AssetPrefix}}/static/overlay.css">
     </head>
 <body>
-
     <div id="alert-container" class="hidden">
-
         <img id="alert-image" src="">
-
         <video id="alert-video" autoplay="autoplay" src=""></video>
-
         <div id="alert-text-wrapper">
             <div id="alert-title"></div>
             <div id="alert-detail"></div>
             <div id="alert-message"></div>
         </div>
     </div>
-
 <script src="{{.AssetPrefix}}/static/alerts_overlay.js"></script>
 </body>
 </html>

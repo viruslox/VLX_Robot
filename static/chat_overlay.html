@@ -7,15 +7,14 @@
     <script>
         window.VLX_CONFIG = {
             WEBSOCKET_PATH: "{{.WebsocketPath}}",
-            ASSET_PREFIX: "{{.AssetPrefix}}"
+            ASSET_PREFIX: "{{.AssetPrefix}}",
+            VOLUME: {{.Volume}}
         };
     </script>
 <link rel="stylesheet" href="{{.AssetPrefix}}/static/overlay.css">
 </head>
 <body>
-
     <video id="command-video"></video>
-
 <script src="{{.AssetPrefix}}/static/chat_overlay.js"></script>
 </body>
 </html>
